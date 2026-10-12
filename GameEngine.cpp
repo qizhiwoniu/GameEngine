@@ -6,9 +6,9 @@
 //---------------------------------------------------------------------------
 #include <Vcl.Styles.hpp>
 #include <Vcl.Themes.hpp>
-USEFORM("Setting.cpp", Form1);
-USEFORM("About.cpp", Form2);
-USEFORM("Unit1.cpp", Form3);
+USEFORM("About.cpp", Form3);
+USEFORM("Setting.cpp", Form2);
+USEFORM("Unit1.cpp", Form1);
 int WINAPI _tWinMain(HINSTANCE, HINSTANCE, LPTSTR, int)
 {
 	try

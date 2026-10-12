@@ -238,6 +238,7 @@
         <None Include="Viewport3D.h">
             <BuildOrder>6</BuildOrder>
         </None>
+        <None Include="Win64x\Debug\SDL3.dll"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -359,6 +360,12 @@
                 <DeployFile LocalName="SDL3-3.4.2\lib\x64\SDL3.dll" Configuration="Debug" Class="File">
                     <Platform Name="Win64x">
                         <RemoteName>SDL3.dll</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="Win64x\Debug\SDL3.dll" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
