@@ -1,0 +1,167 @@
+//---------------------------------------------------------------------------
+
+#include <vcl.h>
+#pragma hdrstop
+
+#include "Setting.h"
+#include <System.TypInfo.hpp>
+//---------------------------------------------------------------------------
+#pragma package(smart_init)
+#pragma resource "*.dfm"
+TForm2 *Form2;
+//---------------------------------------------------------------------------
+// Theme colours (same values as the main form)
+static inline int Rgbi(int r, int g, int b)
+{
+	return static_cast<int>(RGB(r, g, b));
+}
+struct TFormPalette
+{
+	int Bg;		// form / panels
+	int Input;	// edits, combo boxes, lists
+	int Text;
+};
+static TFormPalette GetFormPalette(bool ADark)
+{
+	TFormPalette P;
+	if (ADark)
+	{
+		P.Bg    = Rgbi(32, 32, 32);
+		P.Input = Rgbi(51, 51, 51);
+		P.Text  = Rgbi(255, 255, 255);
+	}
+	else
+	{
+		P.Bg    = Rgbi(243, 243, 243);
+		P.Input = Rgbi(255, 255, 255);
+		P.Text  = Rgbi(0, 0, 0);
+	}
+	return P;
+}
+//---------------------------------------------------------------------------
+// SetWindowTheme / DwmSetWindowAttribute are loaded dynamically so no extra import library is needed
+typedef HRESULT (WINAPI *TSetWindowThemeFn)(HWND, LPCWSTR, LPCWSTR);
+typedef HRESULT (WINAPI *TDwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
+
+static TSetWindowThemeFn GetSetWindowTheme()
+{
+	static TSetWindowThemeFn Fn = NULL;
+	static bool Tried = false;
+	if (!Tried)
+	{
+		Tried = true;
+		HMODULE h = LoadLibraryW(L"uxtheme.dll");
+		if (h)
+			Fn = reinterpret_cast<TSetWindowThemeFn>(GetProcAddress(h, "SetWindowTheme"));
+	}
+	return Fn;
+}
+//---------------------------------------------------------------------------
+// Recursively colour a control and all its children.
+static void ThemeControl(TControl *C, bool ADark, const TFormPalette &P)
+{
+	// Buttons, radio buttons and check boxes are drawn by the global .vsf style (text colour, background
+	// and glyph all come from the style). So: do NOT clear StyleElements, do NOT set colours and do NOT
+	// call SetWindowTheme on them.
+	if (dynamic_cast<TCustomButton*>(C) || dynamic_cast<TRadioButton*>(C) || dynamic_cast<TCheckBox*>(C))
+	{
+		C->StyleElements = TStyleElements() << seFont << seClient << seBorder;
+		return;
+	}
+
+	// For all other controls the .vsf style must not override the colours set here.
+	C->StyleElements = TStyleElements();
+
+	// Colour of the control itself (only if the property is published, e.g. TPanel, TEdit, TMemo ...)
+	bool IsInput = dynamic_cast<TCustomEdit*>(C)      || dynamic_cast<TCustomComboBox*>(C) ||
+				   dynamic_cast<TCustomListBox*>(C);
+	if (IsPublishedProp(C, "ParentBackground"))
+		SetOrdProp(C, "ParentBackground", 0);
+	if (IsPublishedProp(C, "Color"))
+		SetOrdProp(C, "Color", IsInput ? P.Input : P.Bg);
+
+	// Text colour
+	if (IsPublishedProp(C, "Font"))
+	{
+		TFont *F = dynamic_cast<TFont*>(GetObjectProp(C, "Font"));
+		if (F)
+			F->Color = static_cast<TColor>(P.Text);
+	}
+
+	// Native (themed) controls: dark scroll bars, check boxes, edits ...
+	TWinControl *W = dynamic_cast<TWinControl*>(C);
+	if (W)
+	{
+		// Child handles are normally created lazily when the form is shown. Create it now,
+		// otherwise SetWindowTheme would be skipped for it.
+		W->HandleNeeded();
+		if (W->HandleAllocated())
+		{
+			TSetWindowThemeFn pSet = GetSetWindowTheme();
+			if (pSet)
+			{
+				pSet(W->Handle, ADark ? L"DarkMode_Explorer" : L"Explorer", NULL);
+			}
+		}
+		for (int i = 0; i < W->ControlCount; i++)
+			ThemeControl(W->Controls[i], ADark, P);
+		W->Invalidate();
+	}
+}
+//---------------------------------------------------------------------------
+__fastcall TForm2::TForm2(TComponent* Owner)
+	: TForm(Owner), FDark(false)
+{
+	Caption  = L"\u8BBE\u7F6E";			// the word "Settings" in Chinese
+	Position = poOwnerFormCenter;
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm2::CreateWnd()
+{
+	TForm::CreateWnd();
+	ApplyTitleBar();
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm2::ApplyTitleBar()
+{
+	// Dark / light caption bar of the normal Windows title bar (Windows 10 1809+ / Windows 11)
+	static TDwmSetWindowAttributeFn pSet = NULL;
+	static bool Tried = false;
+	if (!Tried)
+	{
+		Tried = true;
+		HMODULE h = LoadLibraryW(L"dwmapi.dll");
+		if (h)
+			pSet = reinterpret_cast<TDwmSetWindowAttributeFn>(GetProcAddress(h, "DwmSetWindowAttribute"));
+	}
+	if (!pSet || !HandleAllocated())
+		return;
+
+	BOOL V = FDark ? TRUE : FALSE;
+	const DWORD kImmersiveDarkMode = 20;		// DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10 20H1+ / 11)
+	const DWORD kImmersiveDarkModeOld = 19;		// same attribute on Windows 10 1809 / 1903
+	if (FAILED(pSet(Handle, kImmersiveDarkMode, &V, sizeof(V))))
+		pSet(Handle, kImmersiveDarkModeOld, &V, sizeof(V));
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm2::ApplyTheme(bool ADark)
+{
+	FDark = ADark;
+
+	// The form itself is coloured by this code (StyleElements empty), but StyleName is left at its
+	// default so that the global .vsf style still applies to the buttons.
+	StyleElements = TStyleElements();
+
+	TFormPalette P = GetFormPalette(ADark);
+	Color      = static_cast<TColor>(P.Bg);
+	Font->Color = static_cast<TColor>(P.Text);
+
+	HandleNeeded();			// make sure the window handle exists so the native controls can be themed
+	ApplyTitleBar();
+
+	for (int i = 0; i < ControlCount; i++)
+		ThemeControl(Controls[i], ADark, P);
+
+	Invalidate();
+}
+//---------------------------------------------------------------------------

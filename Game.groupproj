@@ -1,0 +1,36 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{9FE5D2AE-63EB-43D1-A9FC-D2D4C497BF87}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="GameEngine.cbproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="GameEngine">
+        <MSBuild Projects="GameEngine.cbproj"/>
+    </Target>
+    <Target Name="GameEngine:Clean">
+        <MSBuild Projects="GameEngine.cbproj" Targets="Clean"/>
+    </Target>
+    <Target Name="GameEngine:Make">
+        <MSBuild Projects="GameEngine.cbproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="GameEngine"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="GameEngine:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="GameEngine:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>
