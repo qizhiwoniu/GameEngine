@@ -93,10 +93,12 @@
         <Icon_MainIcon>$(BDS)\bin\cbuilder_PROJECTICON.ico</Icon_MainIcon>
         <UWP_CppLogo44>$(BDS)\bin\Artwork\Windows\UWP\cppreg_UwpDefault_44.png</UWP_CppLogo44>
         <UWP_CppLogo150>$(BDS)\bin\Artwork\Windows\UWP\cppreg_UwpDefault_150.png</UWP_CppLogo150>
-        <IncludePath>..\Projects\;$(IncludePath)</IncludePath>
-        <ILINK_LibraryPath>..\Projects\;$(ILINK_LibraryPath)</ILINK_LibraryPath>
+        <IncludePath>..\..\;..\Form\;..\;..\Core\;APP\;Core\;Form\;..\Projects\;$(IncludePath)</IncludePath>
+        <ILINK_LibraryPath>..\..\;..\Form\;..\;..\Core\;APP\;Core\;Form\;..\Projects\;$(ILINK_LibraryPath)</ILINK_LibraryPath>
         <SanitizedProjectName>GameEngine</SanitizedProjectName>
         <Custom_Styles>&quot;Windows10 Dark|VCLSTYLE|$(BDSCOMMONDIR)\Styles\Windows10Dark.vsf&quot;;Glossy|VCLSTYLE|$(BDSCOMMONDIR)\Styles\Glossy.vsf;YuPengDark|VCLSTYLE|$(BDSCOMMONDIR)\Styles\YuPengDark.vsf</Custom_Styles>
+        <VerInfo_Locale>2052</VerInfo_Locale>
+        <VerInfo_Keys>CompanyName=;FileDescription=$(MSBuildProjectName);FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProgramID=com.embarcadero.$(MSBuildProjectName);ProductName=$(MSBuildProjectName);ProductVersion=1.0.0.0;Comments=</VerInfo_Keys>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
         <PackageImports>adortl;bcbie;bcbsmp;bindcomp;bindcompdbx;bindcompfmx;bindcompvcl;bindcompvclsmp;bindcompvclwinx;bindengine;CloudService;CustomIPTransport;DataSnapClient;DataSnapCommon;DataSnapConnectors;DatasnapConnectorsFreePascal;DataSnapFireDAC;DataSnapIndy10ServerTransport;DataSnapNativeClient;DataSnapProviderClient;DataSnapServer;DataSnapServerMidas;dbexpress;dbrtl;dbxcds;DbxClientDriver;DbxCommonDriver;DBXDb2Driver;DBXFirebirdDriver;DBXInformixDriver;DBXInterBaseDriver;DBXMSSQLDriver;DBXMySQLDriver;DBXOdbcDriver;DBXOracleDriver;DBXSqliteDriver;DBXSybaseASADriver;DBXSybaseASEDriver;dsnap;dsnapcon;dsnapxml;emsclient;emsclientfiredac;emsedge;emshosting;emsserverresource;FireDAC;FireDACADSDriver;FireDACASADriver;FireDACCommon;FireDACCommonDriver;FireDACCommonODBC;FireDACDb2Driver;FireDACDBXDriver;FireDACDSDriver;FireDACIBDriver;FireDACInfxDriver;FireDACMongoDBDriver;FireDACMSAccDriver;FireDACMSSQLDriver;FireDACMySQLDriver;FireDACODBCDriver;FireDACOracleDriver;FireDACPgDriver;FireDACSqliteDriver;FireDACTDataDriver;fmx;fmxase;fmxdae;fmxFireDAC;fmxobj;IndyCore;IndyIPClient;IndyIPCommon;IndyIPServer;IndyProtocols;IndySystem;inet;inetdb;inetdbxpress;inetstn;lmdrtbar;lmdrtchart;lmdrtchartdb;lmdrtcore;lmdrtdesign;lmdrtdialog;lmdrtdocking;lmdrtelcore;lmdrteldb;lmdrtelpro;lmdrtfx;lmdrtgrid;lmdrtide;lmdrtinspector;lmdrtl;lmdrtplugin;lmdrtprint;lmdrtrtf;lmdrtrtfdb;lmdrtrtlx;lmdrtscript;lmdrtscriptimp;lmdrtsearch;lmdrtsearchdb;lmdrtshell;lmdrtspell;lmdrtstorage;lmdrtsyntax;lmdrtsys;lmdrttools;lmdrttoolsdb;lmdrtweb;ngcboxnet;ngcdropbox;ngcgoogle;ngcgoogle10svc;ngcgoogle11svc;ngcgoogle12svc;ngcgoogle13svc;ngcgoogle14svc;ngcgoogle15svc;ngcgoogle16svc;ngcgoogle17svc;ngcgoogle18svc;ngcgoogle19svc;ngcgoogle1svc;ngcgoogle2svc;ngcgoogle3svc;ngcgoogle4svc;ngcgoogle5svc;ngcgoogle6svc;ngcgoogle7svc;ngcgoogle8svc;ngcgoogle9svc;ngcommon;ngcruntime;ngcwrappers;ngdialogs;ngdragdrop;nghtml;ngvalidators;ngvldtctrls;RESTBackendComponents;RESTComponents;rtl;Skia;soapmidas;soaprtl;soapserver;tethering;vcl;vclactnband;vcldb;vcldsnap;vcledge;vclFireDAC;vclie;vclimg;VCLRESTComponents;VclSmp;vcltouch;vclwinx;vclx;xmlrtl;$(PackageImports)</PackageImports>
@@ -125,12 +127,15 @@
         <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;$(DCC_Namespace)</DCC_Namespace>
         <BT_BuildType>Debug</BT_BuildType>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
-        <VerInfo_Keys>CompanyName=;FileDescription=$(MSBuildProjectName);FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProgramID=com.embarcadero.$(MSBuildProjectName);ProductName=$(MSBuildProjectName);ProductVersion=1.0.0.0;Comments=</VerInfo_Keys>
         <VerInfo_Locale>1033</VerInfo_Locale>
         <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
         <BCC_EnableBatchCompilation>true</BCC_EnableBatchCompilation>
         <BCC_PCHName_Clang>GameEnginePCH1.h</BCC_PCHName_Clang>
         <ILINK_LibraryPath>D:\Embarcadero\Embarcadero\Studio\Projects\SDL3-3.4.18\x86_64-w64-mingw32\lib\;D:\Embarcadero\Embarcadero\Studio\Projects\SDL3-3.4.2\lib\x64\;$(ILINK_LibraryPath)</ILINK_LibraryPath>
+        <Icon_MainIcon>Image\icon.ico</Icon_MainIcon>
+        <UWP_CppLogo44>Image\icon.ico</UWP_CppLogo44>
+        <UWP_CppLogo150>Image\icon.ico</UWP_CppLogo150>
+        <AppDPIAwarenessMode>none</AppDPIAwarenessMode>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_1)'!=''">
         <BCC_OptimizeForSpeed>false</BCC_OptimizeForSpeed>
@@ -169,9 +174,9 @@
         <VerInfo_Locale>1033</VerInfo_Locale>
         <IncludePath>D:\Embarcadero\Embarcadero\Studio\Projects\SDL3-3.4.18\x86_64-w64-mingw32\include;$(IncludePath)</IncludePath>
         <ILINK_LibraryPath>D:\Embarcadero\Embarcadero\Studio\Projects\SDL3-3.4.18\x86_64-w64-mingw32\lib;$(ILINK_LibraryPath)</ILINK_LibraryPath>
-        <Icon_MainIcon>icon.ico</Icon_MainIcon>
-        <UWP_CppLogo44>icon.ico</UWP_CppLogo44>
-        <UWP_CppLogo150>icon.ico</UWP_CppLogo150>
+        <Icon_MainIcon>Image\icon.ico</Icon_MainIcon>
+        <UWP_CppLogo44>Image\icon.ico</UWP_CppLogo44>
+        <UWP_CppLogo150>Image\icon.ico</UWP_CppLogo150>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2)'!=''">
         <Defines>NDEBUG;$(Defines)</Defines>
@@ -188,12 +193,40 @@
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
     </PropertyGroup>
     <ItemGroup>
-        <CppCompile Include="About.cpp">
+        <CppCompile Include="Form\About.cpp">
+            <VirtualFolder>{B3DCC26C-AC0B-4D79-922E-092C14D44E37}</VirtualFolder>
             <Form>Form3</Form>
             <FormType>dfm</FormType>
-            <DependentOn>About.h</DependentOn>
+            <DependentOn>Form\About.h</DependentOn>
             <BuildOrder>11</BuildOrder>
         </CppCompile>
+        <CppCompile Include="Form\Setting.cpp">
+            <VirtualFolder>{B3DCC26C-AC0B-4D79-922E-092C14D44E37}</VirtualFolder>
+            <Form>Form2</Form>
+            <FormType>dfm</FormType>
+            <DependentOn>Form\Setting.h</DependentOn>
+            <BuildOrder>3</BuildOrder>
+        </CppCompile>
+        <CppCompile Include="Form\Unit1.cpp">
+            <VirtualFolder>{B3DCC26C-AC0B-4D79-922E-092C14D44E37}</VirtualFolder>
+            <Form>Form1</Form>
+            <FormType>dfm</FormType>
+            <DependentOn>Form\Unit1.h</DependentOn>
+            <BuildOrder>12</BuildOrder>
+        </CppCompile>
+        <None Include="README.MD"/>
+        <LibFiles Include="..\..\SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Condition="'$(Platform)'=='Win64x'">
+            <BuildOrder>6</BuildOrder>
+            <IgnorePath>true</IgnorePath>
+        </LibFiles>
+        <None Include="..\Core\SDLPanel.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>13</BuildOrder>
+        </None>
+        <None Include="..\Core\Viewport3D.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>14</BuildOrder>
+        </None>
         <CppCompile Include="GameEngine.cpp">
             <BuildOrder>0</BuildOrder>
         </CppCompile>
@@ -201,45 +234,19 @@
             <BuildOrder>1</BuildOrder>
             <PCH>true</PCH>
         </PCHCompile>
-        <RcItem Include="icon.ico">
-            <VirtualFolder>{8444A266-F634-47DB-901B-B8163DAB8A4F}</VirtualFolder>
+        <RcItem Include="Image\icon.ico">
             <ResourceType>ICON</ResourceType>
             <ResourceId>Icon_1</ResourceId>
         </RcItem>
         <RcItem Include="Image\play96x96.ico">
-            <VirtualFolder>{8444A266-F634-47DB-901B-B8163DAB8A4F}</VirtualFolder>
             <ResourceType>ICON</ResourceType>
             <ResourceId>Icon_2</ResourceId>
         </RcItem>
         <RcItem Include="Image\play96x96.png">
-            <VirtualFolder>{8444A266-F634-47DB-901B-B8163DAB8A4F}</VirtualFolder>
             <ResourceType>RCDATA</ResourceType>
             <ResourceId>PngImage_2</ResourceId>
         </RcItem>
-        <None Include="README.MD"/>
-        <LibFiles Include="SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Condition="'$(Platform)'=='Win64x'">
-            <BuildOrder>6</BuildOrder>
-            <IgnorePath>true</IgnorePath>
-        </LibFiles>
-        <None Include="SDLPanel.h">
-            <BuildOrder>5</BuildOrder>
-        </None>
-        <CppCompile Include="Setting.cpp">
-            <Form>Form2</Form>
-            <FormType>dfm</FormType>
-            <DependentOn>Setting.h</DependentOn>
-            <BuildOrder>3</BuildOrder>
-        </CppCompile>
-        <CppCompile Include="Unit1.cpp">
-            <Form>Form1</Form>
-            <FormType>dfm</FormType>
-            <DependentOn>Unit1.h</DependentOn>
-            <BuildOrder>2</BuildOrder>
-        </CppCompile>
-        <None Include="Viewport3D.h">
-            <BuildOrder>6</BuildOrder>
-        </None>
-        <None Include="Win64x\Debug\SDL3.dll"/>
+        <None Include="..\..\Win64x\Debug\SDL3.dll"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -274,7 +281,8 @@
                 </Excluded_Packages>
                 <Folders/>
                 <VFOLDERS>
-                    <VFOLDER ID="{8444A266-F634-47DB-901B-B8163DAB8A4F}" name="Image"/>
+                    <VFOLDER ID="{4A896467-AEF2-412D-943A-F0C70C68024D}" name="Core"/>
+                    <VFOLDER ID="{B3DCC26C-AC0B-4D79-922E-092C14D44E37}" name="Form"/>
                 </VFOLDERS>
             </CPlusPlusBuilder.Personality>
             <Deployment Version="5">
@@ -328,6 +336,24 @@
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
+                <DeployFile LocalName="..\..\README.MD" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\Win64x\Debug\SDL3.dll" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
                 <DeployFile LocalName=".\Win64x\Debug\GameEngine.exe" Configuration="Debug" Class="ProjectOutput">
                     <Platform Name="Win64x">
                         <RemoteName>GameEngine.exe</RemoteName>
@@ -337,6 +363,12 @@
                 <DeployFile LocalName=".\Win64x\Debug\GameEngine.pdb" Configuration="Debug" Class="DebugSymbols">
                     <Platform Name="Win64x">
                         <RemoteName>GameEngine.pdb</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="Image\icon.ico" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
@@ -352,33 +384,9 @@
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
-                <DeployFile LocalName="README.MD" Configuration="Debug" Class="ProjectFile">
-                    <Platform Name="Win64x">
-                        <RemoteDir>.\</RemoteDir>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
-                <DeployFile LocalName="SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Configuration="Debug" Class="ProjectFile">
-                    <Platform Name="Win64x">
-                        <RemoteDir>.\</RemoteDir>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
                 <DeployFile LocalName="SDL3-3.4.2\lib\x64\SDL3.dll" Configuration="Debug" Class="File">
                     <Platform Name="Win64x">
                         <RemoteName>SDL3.dll</RemoteName>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
-                <DeployFile LocalName="Win64x\Debug\SDL3.dll" Configuration="Debug" Class="ProjectFile">
-                    <Platform Name="Win64x">
-                        <RemoteDir>.\</RemoteDir>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
-                <DeployFile LocalName="icon.ico" Configuration="Debug" Class="ProjectFile">
-                    <Platform Name="Win64x">
-                        <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
