@@ -216,6 +216,7 @@
             <ResourceType>RCDATA</ResourceType>
             <ResourceId>PngImage_2</ResourceId>
         </RcItem>
+        <None Include="README.MD"/>
         <LibFiles Include="SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Condition="'$(Platform)'=='Win64x'">
             <BuildOrder>6</BuildOrder>
             <IgnorePath>true</IgnorePath>
@@ -346,6 +347,12 @@
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="Image\play96x96.png" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="README.MD" Configuration="Debug" Class="ProjectFile">
                     <Platform Name="Win64x">
                         <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
