@@ -4,11 +4,16 @@
 #define Unit1H
 //---------------------------------------------------------------------------
 #include "Viewport3D.h"
+#include "Viewport2D.h"
+#include "RunWindow.h"			// "Run" window: renders the scene of the 2D node graph
+#include "StartWindow.h"
 #include <System.Classes.hpp>
 #include <Vcl.Controls.hpp>
 #include <Vcl.StdCtrls.hpp>
 #include <Vcl.Forms.hpp>
-#include "LMDDckSite.hpp"
+#include <JvDockControlForm.hpp>		// JvDocking: TJvDockServer / TJvDockClient  (replaces LMDDckSite.hpp)
+#include <JvDockVSNetStyle.hpp>			// JvDocking: Visual Studio .NET style (tabs + auto-hide)
+#include <JvDockVIDStyle.hpp>			// JvDocking: title-strip / tab colour options (TJvDockVIDConjoinServerOption ...)
 #include <Vcl.ComCtrls.hpp>
 #include <Vcl.Menus.hpp>
 #include <Vcl.ToolWin.hpp>
@@ -56,13 +61,7 @@ __published:    // IDE-managed Components
     TMenuItem *mnuNew;
     TMenuItem *About;
     TMenuItem *OnLine;
-    TLMDDockManager *LMDDockManager1;
-    TLMDDockSite *LMDDockSite1;
-    TLMDDockPanel *Output;
-    TLMDDockPanel *LMDDockPanel2;
-    TLMDDockPanel *Explore;
     TPanel *pnlMenuBar;
-    TLMDDockPanel *Document;
     TMenuItem *N1;
     TMenuItem *mnuOpen;
     TMenuItem *E1;
@@ -103,6 +102,34 @@ __published:    // IDE-managed Components
 private:
     bool FDark;        // true = dark theme active
     void __fastcall AlignHelpToolBar();
+
+    // ---- docking (JvDocking replaces the LMD dock site) ----
+    // The four dock zones (left / right / top / bottom) belong to FDockServer; the centre of the form
+    // is the document area (FSdl / FSdl2 sit directly on the form with Align = alClient).
+    // Every dock window is a small code-made TForm with a TJvDockClient.
+    TJvDockServer     *FDockServer;
+    TJvDockVSNetStyle *FDockStyle;		// Visual Studio .NET style: tab groups + auto-hide
+    TForm *FExploreForm;				// holds TreeView1
+    TForm *FCreateForm;					// "Create" (empty for now)
+    TForm *FPropsForm;					// holds the property list FProps
+    TForm *FOutputForm;					// "命令": output history (top) + command input line (bottom)
+	bool   FDockLaidOut;				// the start layout is built once, in FormShow
+	bool   FLayoutLocked;				// "锁定布局": dock windows can not be moved / closed
+	bool __fastcall SaveLayoutFiles();
+	bool __fastcall LoadLayoutFiles();
+	void __fastcall SaveLayoutClick(TObject *Sender);
+	void __fastcall LoadLayoutClick(TObject *Sender);
+	void __fastcall LockLayoutClick(TObject *Sender);
+	void __fastcall SetLayoutLocked(bool ALocked, bool ASave);
+	void __fastcall ViewMenuOpen(TObject *Sender);			// View menu: check marks of the dock windows
+	void __fastcall RestoreLayoutAtStartup();
+    void __fastcall InitDockLayout();
+    void __fastcall LayoutDockForms();
+    TForm* __fastcall CreateDockForm(const String &AName, const String &ACaption, int AW, int AH);
+    void __fastcall DockFormShown(TObject *Sender);
+    void __fastcall DockWindowMenuClick(TObject *Sender);		// View menu: re-open a dock window
+    void __fastcall ApplyDockTheme();							// dock windows / zones / title strips / tabs follow the Dark-Light theme
+
     // ---- file tree (Explore panel) ----
     TPopupMenu *FTreeMenu;
     TMenuItem *FmiNewFile, *FmiCut, *FmiCopy, *FmiPaste, *FmiRename, *FmiDelete, *FmiRefresh;
@@ -159,10 +186,11 @@ private:
         TCustomDrawStage Stage, bool &DefaultDraw);
     void __fastcall ThemeBarAdvancedCustomDrawButton(TToolBar *Sender, TToolButton *Button,
         TCustomDrawState State, TCustomDrawStage Stage, TTBCustomDrawFlags &Flags, bool &DefaultDraw);
-    TViewport3D *FSdl;
+    TViewport3D *FSdl;               // 3D view  (Viewport3D.h)
+    TViewport2D *FSdl2;              // 2D view  (Viewport2D.h); only one of the two is visible
     TImageList *FThemeImages;        // icons of the theme buttons (built in code)
     TImageList *FToolBarImages;     // icons for the movable toolbar buttons
-    TValueListEditor *FProps;        // property panel (LMDDockPanel2)
+    TValueListEditor *FProps;        // property panel (lives in FPropsForm)
     // ---- ToolBar3 (2D / 3D) and ToolBar4 (snap toggle, long press = settings window) ----
     TTimer *FSnapHoldTimer;          // long-press detection of the snap button
     bool FSnapLongPress;             // true when the last press was a long press (swallows the click)
@@ -171,10 +199,13 @@ private:
     TForm *FSnapForm;                // settings window (created on first use)
     void __fastcall SetViewMode(int AMode);
     void __fastcall ModeButtonClick(TObject *Sender);
+    void __fastcall StartClick(TObject *Sender);            // toolbar "Start": open the render window
+    void __fastcall RunClick(TObject *Sender);              // toolbar "Run": restart the animation from the beginning
     void __fastcall SnapButtonMouseDown(TObject *Sender, TMouseButton Button, TShiftState Shift, int X, int Y);
     void __fastcall SnapButtonClick(TObject *Sender);
     void __fastcall SnapHoldTimer(TObject *Sender);
     void __fastcall SnapSettingsChanged(TObject *Sender);
+    void __fastcall ViewportSnapToggled(TObject *Sender);   // S key in the viewport
     void __fastcall ShowSnapSettings();
     void __fastcall ModeBarAdvancedCustomDrawButton(TToolBar *Sender, TToolButton *Button,
         TCustomDrawState State, TCustomDrawStage Stage, TTBCustomDrawFlags &Flags, bool &DefaultDraw);

@@ -1,4 +1,4 @@
-//---------------------------------------------------------------------------
+﻿//---------------------------------------------------------------------------
 
 #include <vcl.h>
 #pragma hdrstop
@@ -7,18 +7,165 @@
 #include "Setting.h"
 #include "About.h"
 #include <Vcl.Themes.hpp>
+#include <JvDockGlobals.hpp>		// JvGlobalDockManager (drag state)
+#include <JvDockSupportControl.hpp>	// TJvDockDragDockObject
 #include <Vcl.Imaging.pngimage.hpp>
+#include <Vcl.ExtCtrls.hpp>
+#include <Vcl.StdCtrls.hpp>
+#include <Vcl.ValEdit.hpp>
 #include <System.Rtti.hpp>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <memory>
+#include <algorithm>
 #include <vector>
 #include <string>
 //---------------------------------------------------------------------------
 #pragma package(smart_init)
-#pragma link "LMDDckSite"
+#pragma link "JvDockControlForm"
+#pragma link "JvDockVSNetStyle"
 #pragma resource "*.dfm"
 TForm1 *Form1;
+//---------------------------------------------------------------------------
+// ====================== CAD 风格命令行面板 ======================
+// Input 面板使用 TEdit 输入命令，按 Enter 执行；执行结果输出到 Output 面板。
+static TEdit *g_CommandEdit = NULL;
+static TMemo *g_CommandOutput = NULL;
+static bool g_CommandLineControlsCreated = false;
+static TPanel *g_CommandPanel = NULL;
+static TLabel *g_CommandPrompt = NULL;
+static bool g_CommandDark = true;
+static void ApplyCommandLineTheme(bool ADark);	// defined after SetControlTheme
+static bool DockFormReallyShown(TForm *F);		// defined with the View menu code
+static TMenuItem *g_DockMenuItems[4] = { NULL, NULL, NULL, NULL };	// View menu entries of the 4 dock windows (identified by pointer, not by caption)
+static void ApplySnapFormTheme(TForm *F, bool ADark);	// defined after TSnapSettingsForm
+
+class TCommandHandler : public TObject
+{
+public:
+    TMemo *Output;
+
+    __fastcall TCommandHandler() : TObject(), Output(NULL) {}
+    void __fastcall InputKeyPress(TObject *Sender, System::WideChar &Key);
+};
+
+static TCommandHandler *g_CommandHandler = NULL;
+
+void __fastcall TCommandHandler::InputKeyPress(TObject *Sender, System::WideChar &Key)
+{
+    if (Key != L'\r')
+        return;
+
+    // Enter 由命令处理器接管，不让输入框执行默认行为。
+    Key = 0;
+
+    TEdit *Edit = dynamic_cast<TEdit*>(Sender);
+    if (!Edit || !Output)
+        return;
+
+    String Line = Trim(Edit->Text);
+    if (Line.IsEmpty())
+        return;
+
+    // clear 清除输出历史，不保留本次命令。
+    if (Line.LowerCase() == L"clear")
+    {
+        Output->Clear();
+        Edit->Clear();
+        return;
+    }
+
+    Output->Lines->Add(L"> " + Line);
+
+    // 分离命令名称与参数，例如：echo Hello World
+    int SpacePos = Line.Pos(L" ");
+    String Cmd;
+    String Args;
+    if (SpacePos > 0)
+    {
+        Cmd = Trim(Line.SubString(1, SpacePos - 1));
+        Args = Trim(Line.SubString(SpacePos + 1, Line.Length() - SpacePos));
+    }
+    else
+    {
+        Cmd = Line;
+        Args = L"";
+    }
+    Cmd = Cmd.LowerCase();
+
+    if (Cmd == L"help")
+    {
+        Output->Lines->Add(L"可用命令：");
+        Output->Lines->Add(L"  help          显示帮助");
+        Output->Lines->Add(L"  clear         清空输出");
+        Output->Lines->Add(L"  echo <文字>   输出指定文字");
+    }
+    else if (Cmd == L"echo")
+    {
+        Output->Lines->Add(Args);
+    }
+    else
+    {
+        Output->Lines->Add(L"未知命令: " + Cmd);
+        Output->Lines->Add(L"输入 help 查看可用命令。");
+    }
+
+    // 自动滚动到最后一行，并准备输入下一条命令。
+    Output->SelStart = Output->Text.Length();
+    Output->Perform(EM_SCROLLCARET, static_cast<NativeUInt>(0), static_cast<NativeInt>(0));
+    Edit->Clear();
+}
+
+static void InitCommandLineControls(TForm *OutputForm)
+{
+    if (g_CommandLineControlsCreated || !OutputForm)
+        return;
+
+    // 类似 Rhino 的命令栏：上方是只读的命令历史/输出，下方是一行命令输入，二者在同一个窗口内。
+    // Output：只读的命令历史与执行结果。
+    g_CommandOutput = new TMemo(OutputForm);
+    g_CommandOutput->Parent = OutputForm;
+    g_CommandOutput->Align = alClient;
+    g_CommandOutput->ReadOnly = true;
+    g_CommandOutput->ScrollBars = ssVertical;
+    g_CommandOutput->WordWrap = false;
+    g_CommandOutput->BorderStyle = bsNone;
+    g_CommandOutput->Font->Name = L"Consolas";
+    g_CommandOutput->Lines->Add(L"命令输出窗口已就绪。输入 help 查看可用命令。");
+
+    // Input：命令提示 + 单行编辑框，固定在窗口底部。
+    TPanel *InputPanel = new TPanel(OutputForm);
+    g_CommandPanel = InputPanel;
+    InputPanel->Parent = OutputForm;
+    InputPanel->Align = alBottom;
+    InputPanel->Height = 22;
+    InputPanel->BevelOuter = bvNone;
+    InputPanel->Caption = L"";
+    InputPanel->ShowCaption = false;
+
+    TLabel *Prompt = new TLabel(InputPanel);
+    g_CommandPrompt = Prompt;
+    Prompt->Parent = InputPanel;
+    Prompt->Align = alLeft;
+    Prompt->Width = 56;
+    Prompt->Alignment = taCenter;
+    Prompt->Layout = tlCenter;
+    Prompt->Caption = L"命令:";
+
+    g_CommandEdit = new TEdit(InputPanel);
+    g_CommandEdit->Parent = InputPanel;
+    g_CommandEdit->Align = alClient;
+    g_CommandEdit->Text = L"";
+    g_CommandEdit->Font->Name = L"Consolas";
+    g_CommandEdit->OnKeyPress = NULL;
+
+    g_CommandHandler = new TCommandHandler();
+    g_CommandHandler->Output = g_CommandOutput;
+    g_CommandEdit->OnKeyPress = g_CommandHandler->InputKeyPress;
+
+    g_CommandLineControlsCreated = true;
+    ApplyCommandLineTheme(g_CommandDark);
+}
 //---------------------------------------------------------------------------
 // Theme colors
 static inline TColor Rgb(int r, int g, int b)
@@ -50,6 +197,7 @@ static const TThemePreset THEME_PRESETS[] =
 static const int THEME_PRESET_COUNT = sizeof(THEME_PRESETS) / sizeof(THEME_PRESETS[0]);
 static const int THEME_SWATCH_BTN_W = 28;		// width of one swatch button (= tbrTheme->ButtonWidth)
 static int g_ThemeIndex = 0;					// selected preset
+static void ApplyCreateDockControlsTheme(bool ADark);
 
 static TColor ThemeBarColor(bool ADark)
 {
@@ -347,14 +495,313 @@ static LRESULT CALLBACK MenuPreHookProc(int nCode, WPARAM wParam, LPARAM lParam)
 	return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 //---------------------------------------------------------------------------
+// Create dock controls. Build these AFTER the initial docking layout is established; creating
+// child HWNDs before JvDocking reparents/recreates the dock form can leave controls invisible
+// until the user floats the window. The custom TPanel buttons also match the dark UI theme.
+class TCreateDockControls : public TPanel
+{
+private:
+    TViewport3D *FView;
+    TLabel *FTitle;
+    TLabel *FHint;
+    TLabel *FStatus;
+    std::vector<TPanel*> FButtons;
+    TPanel *FHotButton;
+    bool FDark;
+
+    void __fastcall LayoutControls(TObject *Sender)
+    {
+        int W = ClientWidth;
+        if (W < 180) W = 180;
+        int ColW = (W - 30) / 2;
+        if (ColW < 70) ColW = 70;
+        if (FTitle) FTitle->SetBounds(10, 8, W - 20, 24);
+        if (FButtons.size() >= 2)
+        {
+            FButtons[0]->SetBounds(10, 38, ColW, 38);
+            FButtons[1]->SetBounds(20 + ColW, 38, ColW, 38);
+        }
+        if (FHint) FHint->SetBounds(10, 84, W - 20, 44);
+        if (FStatus) FStatus->SetBounds(10, 132, W - 20, 42);
+    }
+
+    void __fastcall UpdateButtonColors()
+    {
+        const bool Dark = FDark;
+        for (size_t I = 0; I < FButtons.size(); ++I)
+        {
+            TPanel *B = FButtons[I];
+            if (!B) continue;
+            B->StyleElements = TStyleElements();
+            B->Color = (B == FHotButton)
+                ? (Dark ? Rgb(48, 78, 105) : Rgb(215, 232, 250))
+                : (Dark ? Rgb(48, 48, 48) : Rgb(242, 242, 242));
+            B->Font->Color = Dark ? clWhite : clBlack;
+        }
+    }
+
+    void __fastcall AddButton(const String &Caption, int Action)
+    {
+        TPanel *B = new TPanel(this);
+        B->Parent = this;
+        B->Caption = Caption;
+        B->Tag = Action;
+        B->BevelOuter = bvNone;
+        B->Alignment = taCenter;
+        B->Cursor = crHandPoint;
+        B->Font->Style = TFontStyles() << fsBold;
+        B->OnClick = ButtonClick;
+        B->OnMouseEnter = ButtonEnter;
+        B->OnMouseLeave = ButtonLeave;
+        B->Anchors = TAnchors() << akLeft << akTop << akRight;
+        FButtons.push_back(B);
+    }
+
+    void __fastcall ButtonEnter(TObject *Sender)
+    {
+        FHotButton = dynamic_cast<TPanel*>(Sender);
+        UpdateButtonColors();
+    }
+
+    void __fastcall ButtonLeave(TObject *Sender)
+    {
+        FHotButton = NULL;
+        UpdateButtonColors();
+    }
+
+    void __fastcall ButtonClick(TObject *Sender)
+    {
+        if (!FView) return;
+        TPanel *B = dynamic_cast<TPanel*>(Sender);
+        if (!B) return;
+        switch ((int)B->Tag)
+        {
+            case 0:
+            {
+                int Index = FView->CreateBoxObject();
+                TSceneObj *Obj = FView->MutableObj(Index);
+                if (FStatus)
+                    FStatus->Caption = Obj ? (L"已创建：" + Obj->Name) : L"创建方体失败。";
+                break;
+            }
+            case 1:
+            {
+                int Index = FView->CreatePlaneObject();
+                TSceneObj *Obj = FView->MutableObj(Index);
+                if (FStatus)
+                    FStatus->Caption = Obj ? (L"已创建：" + Obj->Name) : L"创建平面失败。";
+                break;
+            }
+        }
+        FView->Invalidate();
+        if (FView->CanFocus()) FView->SetFocus();
+    }
+
+public:
+    __fastcall TCreateDockControls(TComponent *Owner, TWinControl *ParentWnd, TViewport3D *View)
+        : TPanel(Owner), FView(View), FTitle(NULL), FHint(NULL), FStatus(NULL), FHotButton(NULL), FDark(true)
+    {
+        Parent = ParentWnd;
+        Align = alClient;
+        BevelOuter = bvNone;
+        Caption = L"";
+        DoubleBuffered = true;
+        OnResize = LayoutControls;
+
+        FTitle = new TLabel(this);
+        FTitle->Parent = this;
+        FTitle->Caption = L"标准基本体";
+        FTitle->Font->Style = TFontStyles() << fsBold;
+        FTitle->Transparent = true;
+        FTitle->Anchors = TAnchors() << akLeft << akTop << akRight;
+
+        AddButton(L"+  方体", 0);
+        AddButton(L"+  平面", 1);
+
+        FHint = new TLabel(this);
+        FHint->Parent = this;
+        FHint->AutoSize = false;
+        FHint->WordWrap = true;
+        FHint->Transparent = true;
+        FHint->Caption = L"Q 选择   W 移动   E 旋转   R 缩放\nCtrl+C 复制   Ctrl+V 粘贴   Delete 删除";
+        FHint->Anchors = TAnchors() << akLeft << akTop << akRight;
+
+        FStatus = new TLabel(this);
+        FStatus->Parent = this;
+        FStatus->AutoSize = false;
+        FStatus->WordWrap = true;
+        FStatus->Transparent = true;
+        FStatus->Caption = L"选中物体后，可在“属性”中修改位置和长宽高。";
+        FStatus->Anchors = TAnchors() << akLeft << akTop << akRight;
+
+        LayoutControls(NULL);
+    }
+
+    void __fastcall ApplyTheme(bool ADark)
+    {
+        FDark = ADark;
+        StyleElements = TStyleElements();
+        Color = ADark ? Rgb(DARK_BAR_R, DARK_BAR_G, DARK_BAR_B) : clWhite;
+        Font->Color = ADark ? clWhite : clBlack;
+        if (FTitle)
+        {
+            FTitle->StyleElements = TStyleElements();
+            FTitle->Font->Color = ADark ? clWhite : clBlack;
+        }
+        if (FHint)
+        {
+            FHint->StyleElements = TStyleElements();
+            FHint->Font->Color = ADark ? Rgb(185, 185, 185) : Rgb(90, 90, 90);
+        }
+        if (FStatus)
+        {
+            FStatus->StyleElements = TStyleElements();
+            FStatus->Font->Color = ADark ? Rgb(185, 205, 225) : Rgb(70, 90, 110);
+        }
+        UpdateButtonColors();
+        Invalidate();
+    }
+};
+
+static TCreateDockControls *g_CreateDockControls = NULL;
+static void ApplyCreateDockControlsTheme(bool ADark)
+{
+    if (g_CreateDockControls)
+        g_CreateDockControls->ApplyTheme(ADark);
+}
+
+static void InitCreateDockControls(TForm *DockForm, TViewport3D *View)
+{
+    if (!DockForm || !View || g_CreateDockControls)
+        return;
+    // Owner/Parent are the dock form, but this is called only after LayoutDockForms().
+    g_CreateDockControls = new TCreateDockControls(DockForm, DockForm, View);
+    DockForm->Realign();
+    g_CreateDockControls->ApplyTheme(true);
+    g_CreateDockControls->BringToFront();
+    g_CreateDockControls->Visible = true;
+    DockForm->Invalidate();
+}
+
+// Editable Properties grid: edits are committed directly to the active viewport object.
+class TScenePropertyEditor : public TValueListEditor
+{
+private:
+    TViewport3D *FView;
+
+    String __fastcall CurrentValue(TSceneObj *O, const String &Key)
+    {
+        if (!O) return String();
+        if (Key == L"Name") return O->Name;
+        if (Key == L"Type") return O->Kind;
+        if (Key == L"Position X") return FloatToStrF((double)O->Pos.x, ffFixed, 7, 2);
+        if (Key == L"Position Y") return FloatToStrF((double)O->Pos.y, ffFixed, 7, 2);
+        if (Key == L"Position Z") return FloatToStrF((double)O->Pos.z, ffFixed, 7, 2);
+        if (Key == L"Rotation X") return FloatToStrF((double)(O->Rot.x * 57.2957795131), ffFixed, 7, 2);
+        if (Key == L"Rotation Y") return FloatToStrF((double)(O->Rot.y * 57.2957795131), ffFixed, 7, 2);
+        if (Key == L"Rotation Z") return FloatToStrF((double)(O->Rot.z * 57.2957795131), ffFixed, 7, 2);
+        if (Key == L"Length (X)") return FloatToStrF((double)(O->Half.x * 2.0f), ffFixed, 7, 2);
+        if (Key == L"Width (Y)")  return FloatToStrF((double)(O->Half.y * 2.0f), ffFixed, 7, 2);
+        if (Key == L"Height (Z)") return FloatToStrF((double)(O->Half.z * 2.0f), ffFixed, 7, 2);
+        if (Key == L"Color R") return IntToStr(O->R);
+        if (Key == L"Color G") return IntToStr(O->G);
+        if (Key == L"Color B") return IntToStr(O->B);
+        return String();
+    }
+
+    void __fastcall PropertyValidate(TObject *Sender, int ACol, int ARow, const String KeyName, const String KeyValue)
+    {
+        if (!FView || ACol != 1 || ARow < 1)
+            return;
+        TSceneObj *O = FView->MutableObj(FView->Selected);
+        if (!O)
+            return;
+
+        String Key = KeyName;
+        const String &Value = KeyValue;
+        if (Key == L"Name")
+        {
+            String NewName = Value.Trim();
+            if (!NewName.IsEmpty())
+                O->Name = NewName;
+            else
+                Cells[1][ARow] = O->Name;
+            return;
+        }
+
+        if (Key == L"Color R" || Key == L"Color G" || Key == L"Color B")
+        {
+            int C = 0;
+            if (!TryStrToInt(Value, C) || C < 0 || C > 255)
+            {
+                Cells[1][ARow] = CurrentValue(O, Key);
+                return;
+            }
+            if (Key == L"Color R") O->R = C;
+            else if (Key == L"Color G") O->G = C;
+            else O->B = C;
+            return;
+        }
+
+        // Type is informational for now; changing it would not change the mesh geometry.
+        if (Key != L"Position X" && Key != L"Position Y" && Key != L"Position Z" &&
+            Key != L"Rotation X" && Key != L"Rotation Y" && Key != L"Rotation Z" &&
+            Key != L"Length (X)" && Key != L"Width (Y)" && Key != L"Height (Z)")
+        {
+            Cells[1][ARow] = CurrentValue(O, Key);
+            return;
+        }
+
+        double D = 0.0;
+        if (!TryStrToFloat(Value, D) || D != D || D > 1000000.0 || D < -1000000.0)
+        {
+            Cells[1][ARow] = CurrentValue(O, Key);
+            return;
+        }
+        if (Key == L"Rotation X" || Key == L"Rotation Y" || Key == L"Rotation Z")
+        {
+            const float Rad = (float)(D * 0.0174532925199433);
+            if (Key == L"Rotation X") O->Rot.x = Rad;
+            else if (Key == L"Rotation Y") O->Rot.y = Rad;
+            else O->Rot.z = Rad;
+        }
+        else if (Key == L"Length (X)" || Key == L"Width (Y)" || Key == L"Height (Z)")
+        {
+            if (D <= 0.001)
+            {
+                Cells[1][ARow] = CurrentValue(O, Key);
+                return;
+            }
+            if (Key == L"Length (X)") O->Half.x = (float)D * 0.5f;
+            else if (Key == L"Width (Y)") O->Half.y = (float)D * 0.5f;
+            else O->Half.z = (float)D * 0.5f;
+        }
+        else
+        {
+            if (Key == L"Position X") O->Pos.x = (float)D;
+            else if (Key == L"Position Y") O->Pos.y = (float)D;
+            else O->Pos.z = (float)D;
+        }
+    }
+
+public:
+    __fastcall TScenePropertyEditor(TComponent *Owner, TViewport3D *View)
+        : TValueListEditor(Owner), FView(View)
+    {
+        OnValidate = PropertyValidate;
+    }
+};
+//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 __fastcall TForm1::TForm1(TComponent* Owner)
-	: TForm(Owner), FDark(false), FTreeMenu(NULL), FBarMenu(NULL), FmiShowThemeBar(NULL), FmiShowToolBar1(NULL), FmiShowToolBar2(NULL), FmiShowToolBar3(NULL), FmiShowToolBar4(NULL), FAllowRename(false), FSdl(NULL), FThemeImages(NULL), FToolBarImages(NULL), FProps(NULL),
+	: TForm(Owner), FDark(false), FTreeMenu(NULL), FBarMenu(NULL), FmiShowThemeBar(NULL), FmiShowToolBar1(NULL), FmiShowToolBar2(NULL), FmiShowToolBar3(NULL), FmiShowToolBar4(NULL), FAllowRename(false), FDockServer(NULL), FDockStyle(NULL), FExploreForm(NULL), FCreateForm(NULL), FPropsForm(NULL), FOutputForm(NULL), FDockLaidOut(false), FLayoutLocked(false), FSdl(NULL), FSdl2(NULL), FThemeImages(NULL), FToolBarImages(NULL), FProps(NULL),
 	  FSnapHoldTimer(NULL), FSnapLongPress(false), FViewMode(1), FSnapForm(NULL)
 {
 }
 //---------------------------------------------------------------------------
 __fastcall TForm1::~TForm1()
 {
+	g_CreateDockControls = NULL;	// the dock form owns and destroys the control panel
 	if (g_MenuFrameHook)
 	{
 		UnhookWindowsHookEx(g_MenuFrameHook);
@@ -1061,6 +1508,42 @@ static void SetControlTheme(TWinControl *W, bool ADark)
 		pSet(W->Handle, ADark ? L"DarkMode_Explorer" : L"Explorer", NULL);
 }
 //---------------------------------------------------------------------------
+// Command window follows the Dark / Light theme (same colours as the property panel)
+static void ApplyCommandLineTheme(bool ADark)
+{
+	g_CommandDark = ADark;
+	if (!g_CommandLineControlsCreated)
+		return;
+	TColor Bg = ADark ? Rgb(DARK_BAR_R, DARK_BAR_G, DARK_BAR_B) : clWhite;
+	TColor Fg = ADark ? clWhite : clBlack;
+	if (g_CommandOutput)
+	{
+		g_CommandOutput->StyleElements = TStyleElements();
+		g_CommandOutput->Color = Bg;
+		g_CommandOutput->Font->Color = Fg;
+		SetControlTheme(g_CommandOutput, ADark);
+		g_CommandOutput->Invalidate();
+	}
+	if (g_CommandPanel)
+	{
+		g_CommandPanel->StyleElements = TStyleElements();
+		g_CommandPanel->ParentBackground = false;
+		g_CommandPanel->Color = Bg;
+	}
+	if (g_CommandPrompt)
+	{
+		g_CommandPrompt->StyleElements = TStyleElements();
+		g_CommandPrompt->Font->Color = Fg;
+	}
+	if (g_CommandEdit)
+	{
+		g_CommandEdit->StyleElements = TStyleElements();
+		g_CommandEdit->Color = Bg;
+		g_CommandEdit->Font->Color = Fg;
+		g_CommandEdit->BorderStyle = bsNone;
+	}
+}
+//---------------------------------------------------------------------------
 void __fastcall TForm1::AlignHelpToolBar()
 {
 	// Shrink the Help toolbar to exactly fit its button, then keep it flush against the right edge.
@@ -1077,19 +1560,19 @@ void __fastcall TForm1::InitToolBarVisibilityMenu()
     FBarMenu->AutoHotkeys = maManual;
 
     FmiShowThemeBar = new TMenuItem(FBarMenu);
-    FmiShowThemeBar->Caption = L"\u4E3B\u9898\u914D\u8272"; // ������ɫ
+    FmiShowThemeBar->Caption = L"\u4E3B\u9898\u914D\u8272"; // 主题配色
     FmiShowThemeBar->Tag = 0;
     FmiShowThemeBar->OnClick = ToolBarVisibilityMenuClick;
     FBarMenu->Items->Add(FmiShowThemeBar);
 
     FmiShowToolBar1 = new TMenuItem(FBarMenu);
-    FmiShowToolBar1->Caption = L"\u5DE5\u5177\u680F 1"; // ������ 1
+    FmiShowToolBar1->Caption = L"\u5DE5\u5177\u680F 1"; // 工具栏 1
     FmiShowToolBar1->Tag = 1;
     FmiShowToolBar1->OnClick = ToolBarVisibilityMenuClick;
     FBarMenu->Items->Add(FmiShowToolBar1);
 
     FmiShowToolBar2 = new TMenuItem(FBarMenu);
-    FmiShowToolBar2->Caption = L"\u5DE5\u5177\u680F 2"; // ������ 2
+    FmiShowToolBar2->Caption = L"\u5DE5\u5177\u680F 2"; // 工具栏 2
     FmiShowToolBar2->Tag = 2;
     FmiShowToolBar2->OnClick = ToolBarVisibilityMenuClick;
     FBarMenu->Items->Add(FmiShowToolBar2);
@@ -1244,8 +1727,15 @@ void __fastcall TForm1::ApplyTheme(bool ADark)
 	SetControlTheme(TreeView1, ADark);
 	TreeView1->Invalidate();
 
-	// ---- Property panel (LMDDockPanel2) ----
+	// ---- Property panel (dock window FPropsForm) ----
 	ApplyPropsTheme();
+	ApplyCommandLineTheme(ADark);
+	if (FSnapForm)
+		ApplySnapFormTheme(FSnapForm, ADark);
+	ApplyCreateDockControlsTheme(ADark);
+
+	// ---- Dock windows, zones, title strips, tabs ----
+	ApplyDockTheme();
 
 	TitleBarPanel1->Invalidate();
 	pnlMenuBar->Invalidate();
@@ -1547,28 +2037,30 @@ void __fastcall TForm1::InitThemeBar()
 	ToolBar4->Images = FToolBarImages;
 
 	// ToolBar1: New / Open / Save
-	ToolButton1->ImageIndex = ICON_NEW;  ToolButton1->Hint = L"\u65B0\u5EFA";	// �½�
-	ToolButton3->ImageIndex = ICON_OPEN;  ToolButton3->Hint = L"\u6253\u5F00";	// ��
-	ToolButton5->ImageIndex = ICON_SAVE;  ToolButton5->Hint = L"\u4FDD\u5B58";	// ����
+	ToolButton1->ImageIndex = ICON_NEW;  ToolButton1->Hint = L"\u65B0\u5EFA";	// 新建
+	ToolButton3->ImageIndex = ICON_OPEN;  ToolButton3->Hint = L"\u6253\u5F00";	// 打开
+	ToolButton5->ImageIndex = ICON_SAVE;  ToolButton5->Hint = L"\u4FDD\u5B58";	// 保存
 
 	// ToolBar2: start + play (ToolButton7 is the existing button, the second one is created here)
-	ToolButton7->ImageIndex = ICON_START;  ToolButton7->Hint = L"\u5F00\u59CB";	// ��ʼ
+	ToolButton7->ImageIndex = ICON_START;  ToolButton7->Hint = L"\u5F00\u59CB";	// 开始
 	TToolButton *PlayBtn = new TToolButton(ToolBar2);
 	PlayBtn->Parent     = ToolBar2;
 	PlayBtn->Style      = tbsButton;
 	PlayBtn->ImageIndex = ICON_RUN;
-	PlayBtn->Hint       = L"\u8FD0\u884C";								// ����
+	PlayBtn->Hint       = L"\u8FD0\u884C";								// 运行
 	PlayBtn->Left       = ToolButton7->Left + ToolButton7->Width;		// to the right of ToolButton7
+	PlayBtn->OnClick    = RunClick;										// Run: restart the game from the beginning
+	ToolButton7->OnClick = StartClick;									// Start: open the render window
 
 	// ToolBar3: 2D / 3D (ToolButton9 = 2D, ToolButton11 = 3D; text buttons, flat look drawn in ModeBarAdvancedCustomDrawButton)
-	ToolButton9->Caption  = L"2D";  ToolButton9->Hint  = L"2D \u89C6\u56FE";	// 2D ��ͼ
-	ToolButton11->Caption = L"3D";  ToolButton11->Hint = L"3D \u89C6\u56FE";	// 3D ��ͼ
+	ToolButton9->Caption  = L"2D";  ToolButton9->Hint  = L"2D \u89C6\u56FE";	// 2D 视图
+	ToolButton11->Caption = L"3D";  ToolButton11->Hint = L"3D \u89C6\u56FE";	// 3D 视图
 	ToolButton9->OnClick  = ModeButtonClick;
 	ToolButton11->OnClick = ModeButtonClick;
 
 	// ToolBar4: snap toggle (ToolButton13): click = on/off, long press = settings window
 	ToolButton13->ImageIndex  = ICON_SNAP;
-	ToolButton13->Hint        = L"\u6355\u6349\u5F00\u5173(\u957F\u6309\u6253\u5F00\u8BBE\u7F6E)";	// ��׽����(����������)
+	ToolButton13->Hint        = L"\u6355\u6349\u5F00\u5173(\u957F\u6309\u6253\u5F00\u8BBE\u7F6E)";	// 捕捉开关(长按打开设置)
 	ToolButton13->OnClick     = SnapButtonClick;
 	ToolButton13->OnMouseDown = SnapButtonMouseDown;
 	ToolBar3->OnAdvancedCustomDrawButton = ModeBarAdvancedCustomDrawButton;
@@ -1593,7 +2085,7 @@ void __fastcall TForm1::InitThemeBar()
 	ToolBar3->Width = 2 * ToolBar3->ButtonWidth + 4;
 	ToolBar4->Width = 1 * ToolBar4->ButtonWidth + 4;
 
-	// ---- cbrTheme must never accept LMD dock panels (or anything else) ----
+	// ---- cbrTheme must never accept dock windows (or anything else) ----
 	cbrTheme->OnGetSiteInfo = ThemeBarGetSiteInfo;
 	cbrTheme->OnDockOver    = ThemeBarDockOver;
 	cbrTheme->OnBandInfo    = ThemeBarBandInfo;		// closes the gaps between ToolBar1..4
@@ -1635,7 +2127,7 @@ void __fastcall TForm1::LayoutThemeBar()
 	if (tbrTheme->HandleAllocated() && tbrTheme->ButtonCount > 0)
 		tbrTheme->Width = tbrTheme->Buttons[tbrTheme->ButtonCount - 1]->BoundsRect.Right;
 }
-// cbrTheme only holds its own toolbars. Everything else (LMD dock panels, other controls)
+// cbrTheme only holds its own toolbars. Everything else (dock windows, other controls)
 // is refused, otherwise dragging a dock panel over the bar docks it in there and breaks the layout.
 void __fastcall TForm1::ThemeBarGetSiteInfo(TObject *Sender, TControl *DockClient,
 	TRect &InfluenceRect, const TPoint &MousePos, bool &CanDock)
@@ -1864,8 +2356,33 @@ void __fastcall TForm1::MenuItemAdvancedDrawItem(TObject *Sender, TCanvas *ACanv
 	TColor TextColor = Disabled ? P.Dim : P.Text;
 	int MidY = (R.Top + R.Bottom) / 2;
 
-	// check mark
-	if (Item->Checked)
+	// The dock window entries of the View menu are checked while the window is really on screen.
+	// This is asked every time the item is painted, so it never shows an old state.
+	bool ShowCheck = Item->Checked;
+	{
+		TForm *Forms[4] = { FExploreForm, FCreateForm, FPropsForm, FOutputForm };
+		for (int k = 0; k < 4; k++)
+			if (Item == g_DockMenuItems[k])		// dock window entry: ONLY the live window state decides
+			{
+				ShowCheck = DockFormReallyShown(Forms[k]);
+				break;
+			}
+	}
+
+	// check mark ("锁定布局": a padlock instead of the check mark)
+	if (ShowCheck && Item == N8)
+	{
+		const int X = R.Left + 7, Y = MidY - 8;			// padlock 12 x 16
+		ACanvas->Pen->Color = TextColor;
+		ACanvas->Pen->Width = 2;
+		ACanvas->Brush->Style = bsClear;
+		ACanvas->RoundRect(X + 2, Y + 1, X + 10, Y + 10, 6, 6);	// shackle
+		ACanvas->Pen->Width = 1;
+		ACanvas->Brush->Style = bsSolid;
+		ACanvas->Brush->Color = TextColor;
+		ACanvas->RoundRect(X, Y + 7, X + 12, Y + 16, 3, 3);		// body
+	}
+	else if (ShowCheck)
 	{
 		ACanvas->Pen->Color = TextColor;
 		ACanvas->Pen->Width = 2;
@@ -1923,6 +2440,997 @@ void __fastcall TForm1::FormShow(TObject *Sender)
 {
 	AlignHelpToolBar();
 	LayoutThemeBar();
+	LayoutDockForms();		// build the start layout once (docking needs the main window to exist)
+	// Create command controls only after JvDocking has established the dock layout.
+	InitCommandLineControls(FOutputForm);
+	// Create child HWNDs after JvDocking has finished the initial reparent/handle recreation.
+	if (!g_CreateDockControls && FCreateForm && FSdl)
+	{
+		InitCreateDockControls(FCreateForm, FSdl);
+		ApplyCreateDockControlsTheme(FDark);
+		FCreateForm->Invalidate();
+	}
+	RestoreLayoutAtStartup();		// a layout that was locked last time
+}
+//---------------------------------------------------------------------------
+// ===========================  DOCKING (JvDocking)  ===========================
+// TJvDockServer on the main form creates the four dock zones (left / right / top / bottom) around the
+// form's client area. Every dock window is a small TForm (created in code, no .dfm) that carries a
+// TJvDockClient - the same thing TJvDockableForm does internally. The style decides how it looks:
+// TJvDockVSNetStyle = Visual Studio .NET (tab groups + auto-hide).
+// To add another dock window:  F = CreateDockForm(...);  put controls on it;  add it in LayoutDockForms().
+//---------------------------------------------------------------------------
+TForm* __fastcall TForm1::CreateDockForm(const String &AName, const String &ACaption, int AW, int AH)
+{
+	TForm *F = new TForm(this, 1);			// CreateNew: this form has no .dfm resource
+	F->Name         = AName;				// must be unique
+	F->Caption      = ACaption;
+	F->BorderStyle  = bsSizeToolWin;
+	F->Position     = poDesigned;
+	F->ClientWidth  = AW;
+	F->ClientHeight = AH;
+
+	TJvDockClient *C = new TJvDockClient(F);
+	C->DockStyle      = FDockStyle;
+	C->LRDockWidth    = AW;					// size of the zone when docked left / right
+	C->TBDockHeight   = AH;					// size of the zone when docked top / bottom
+	C->OnFormShow     = DockFormShown;
+	return F;
+}
+//---------------------------------------------------------------------------
+// ===========================  LAYOUT: save / load / lock  ===========================
+// "保存布局" writes the JvDocking tree (every dock window, floating windows, zone sizes) to
+// <exe>.layout and the main window rectangle + toolbar visibility to <exe>.ini, section [Layout].
+// "加载布局" reads them back. "锁定布局" saves first, then blocks every mouse press on the dock chrome
+// (title strips, tab headers, splitters, zones, floating window frames), so windows can neither be
+// dragged, docked, floated, closed nor resized; a padlock replaces the check mark of the menu item. The locked state
+// is stored too and is restored at the next start. Click "锁定布局" again to unlock.
+//---------------------------------------------------------------------------
+// Application->OnMessage hook (a static object, so it outlives the form): while the layout is locked,
+// mouse presses on the dock chrome are swallowed.
+class TLayoutLockHook : public TObject
+{
+public:
+	TMessageEvent Prev;
+	bool          Locked;
+	TForm        *Forms[4];
+	__fastcall TLayoutLockHook() : Prev(NULL), Locked(false) { Forms[0] = Forms[1] = Forms[2] = Forms[3] = NULL; }
+	bool __fastcall IsChrome(HWND H)
+	{
+		TWinControl *C = FindControl(H);
+		if (!C)
+			return false;
+		for (int i = 0; i < 4; i++)
+			if (C == Forms[i])
+				return true;					// a dock window itself (title strip / floating frame)
+		return C->ClassName().Pos(L"TJvDock") == 1;	// zones, splitters, tab hosts, auto-hide strips
+	}
+	void __fastcall OnMsg(tagMSG &Msg, bool &Handled)
+	{
+		if (Prev)
+			Prev(Msg, Handled);
+		if (Handled || !Locked)
+			return;
+		switch (Msg.message)
+		{
+			case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
+			case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
+			case WM_NCLBUTTONDOWN: case WM_NCLBUTTONDBLCLK: case WM_NCRBUTTONDOWN:
+				if (IsChrome(Msg.hwnd))
+					Handled = true;
+				break;
+		}
+	}
+};
+static TLayoutLockHook *g_LayoutHook = NULL;
+//---------------------------------------------------------------------------
+static String LayoutTreeFile() { return ChangeFileExt(ParamStr(0), L".layout"); }
+static String LayoutIniFile()  { return ChangeFileExt(ParamStr(0), L".ini"); }
+static void CmdLog(const String &Msg)
+{
+	if (g_CommandOutput)
+		g_CommandOutput->Lines->Add(Msg);
+}
+//---------------------------------------------------------------------------
+bool __fastcall TForm1::SaveLayoutFiles()
+{
+	try
+	{
+		SaveDockTreeToFile(LayoutTreeFile());
+		std::unique_ptr<TIniFile> Ini(new TIniFile(LayoutIniFile()));
+		WINDOWPLACEMENT Wp;
+		ZeroMemory(&Wp, sizeof(Wp));
+		Wp.length = sizeof(Wp);
+		::GetWindowPlacement(Handle, &Wp);			// normal (restored) rectangle even when maximized
+		Ini->WriteInteger(L"Layout", L"MainState", WindowState == wsMaximized ? (int)wsMaximized : (int)wsNormal);
+		Ini->WriteInteger(L"Layout", L"MainLeft",   Wp.rcNormalPosition.left);
+		Ini->WriteInteger(L"Layout", L"MainTop",    Wp.rcNormalPosition.top);
+		Ini->WriteInteger(L"Layout", L"MainWidth",  Wp.rcNormalPosition.right - Wp.rcNormalPosition.left);
+		Ini->WriteInteger(L"Layout", L"MainHeight", Wp.rcNormalPosition.bottom - Wp.rcNormalPosition.top);
+		Ini->WriteBool(L"Layout", L"BarTheme", tbrTheme->Visible);
+		Ini->WriteBool(L"Layout", L"Bar1", ToolBar1->Visible);
+		Ini->WriteBool(L"Layout", L"Bar2", ToolBar2->Visible);
+		Ini->WriteBool(L"Layout", L"Bar3", ToolBar3->Visible);
+		Ini->WriteBool(L"Layout", L"Bar4", ToolBar4->Visible);
+		Ini->WriteBool(L"Layout", L"HasLayout", true);
+		return true;
+	}
+	catch (Exception &E)
+	{
+		CmdLog(L"保存布局失败: " + E.Message);		// 保存布局失败
+		return false;
+	}
+}
+//---------------------------------------------------------------------------
+bool __fastcall TForm1::LoadLayoutFiles()
+{
+	if (!FileExists(LayoutTreeFile()))
+	{
+		CmdLog(L"没有找到已保存的布局");	// 没有找到已保存的布局
+		return false;
+	}
+	try
+	{
+		LoadDockTreeFromFile(LayoutTreeFile());
+		std::unique_ptr<TIniFile> Ini(new TIniFile(LayoutIniFile()));
+		if (Ini->ReadBool(L"Layout", L"HasLayout", false))
+		{
+			int St = Ini->ReadInteger(L"Layout", L"MainState", (int)wsNormal);
+			int L  = Ini->ReadInteger(L"Layout", L"MainLeft",   Left);
+			int T  = Ini->ReadInteger(L"Layout", L"MainTop",    Top);
+			int W  = Ini->ReadInteger(L"Layout", L"MainWidth",  Width);
+			int H  = Ini->ReadInteger(L"Layout", L"MainHeight", Height);
+			if (St == (int)wsMaximized)
+				WindowState = wsMaximized;
+			else
+			{
+				WindowState = wsNormal;
+				SetBounds(L, T, W, H);
+			}
+			tbrTheme->Visible = Ini->ReadBool(L"Layout", L"BarTheme", tbrTheme->Visible);
+			ToolBar1->Visible = Ini->ReadBool(L"Layout", L"Bar1", ToolBar1->Visible);
+			ToolBar2->Visible = Ini->ReadBool(L"Layout", L"Bar2", ToolBar2->Visible);
+			ToolBar3->Visible = Ini->ReadBool(L"Layout", L"Bar3", ToolBar3->Visible);
+			ToolBar4->Visible = Ini->ReadBool(L"Layout", L"Bar4", ToolBar4->Visible);
+			cbrTheme->Realign();
+		}
+		DockFormShown(NULL);		// docking re-created window handles: dark scroll bars / colours again
+		return true;
+	}
+	catch (Exception &E)
+	{
+		CmdLog(L"加载布局失败: " + E.Message);		// 加载布局失败
+		return false;
+	}
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::SaveLayoutClick(TObject *Sender)
+{
+	if (SaveLayoutFiles())
+		CmdLog(L"布局已保存");		// 布局已保存
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::LoadLayoutClick(TObject *Sender)
+{
+	if (FLayoutLocked)
+	{
+		CmdLog(L"布局已锁定，请先解锁再加载");	// 布局已锁定，请先解锁再加载
+		return;
+	}
+	if (LoadLayoutFiles())
+		CmdLog(L"布局已加载");		// 布局已加载
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::SetLayoutLocked(bool ALocked, bool ASave)
+{
+	if (ALocked && ASave && !SaveLayoutFiles())		// remember the current positions first
+		return;
+	FLayoutLocked = ALocked;
+	if (g_LayoutHook)
+		g_LayoutHook->Locked = ALocked;
+	if (N8)
+		N8->Checked = ALocked;
+	try
+	{
+		std::unique_ptr<TIniFile> Ini(new TIniFile(LayoutIniFile()));
+		Ini->WriteBool(L"Layout", L"Locked", ALocked);
+	}
+	catch (Exception &) {}
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::LockLayoutClick(TObject *Sender)
+{
+	SetLayoutLocked(!FLayoutLocked, true);
+	CmdLog(FLayoutLocked ? L"布局已锁定" : L"布局已解锁");	// 布局已锁定 / 布局已解锁
+}
+//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+// start of the program: a layout that was locked last time is loaded and locked again
+void __fastcall TForm1::RestoreLayoutAtStartup()
+{
+	try
+	{
+		if (!FileExists(LayoutIniFile()) || !FileExists(LayoutTreeFile()))
+			return;
+		std::unique_ptr<TIniFile> Ini(new TIniFile(LayoutIniFile()));
+		if (!Ini->ReadBool(L"Layout", L"Locked", false))
+			return;
+	}
+	catch (Exception &) { return; }
+	if (LoadLayoutFiles())
+		SetLayoutLocked(true, false);
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::InitDockLayout()
+{
+	FDockStyle  = new TJvDockVSNetStyle(this);
+	FDockServer = new TJvDockServer(this);
+	FDockServer->DockStyle = FDockStyle;	// creates the four dock panels + splitters (all start with size 0)
+
+	FExploreForm = CreateDockForm(L"dockExplore", L"Explore", 220, 400);
+	FCreateForm  = CreateDockForm(L"dockCreate",  L"Create",  220, 200);
+	FPropsForm   = CreateDockForm(L"dockProps",   L"属性", 220, 200);	// "Properties"
+	FOutputForm  = CreateDockForm(L"dockOutput",  L"命令",  600, 90);	// 命令历史 + 输入行，合并为一个窗口
+	// the file tree was designed on the main form (hidden): move it into its dock window
+	TreeView1->Parent  = FExploreForm;
+	TreeView1->Align   = alClient;
+	TreeView1->Visible = true;
+
+	// View menu: open a dock window again after it was closed
+	TMenuItem *Sep = new TMenuItem(this);
+	Sep->Caption = L"-";
+	mnuView->Add(Sep);
+	TForm *DockForms[4] = { FExploreForm, FCreateForm, FPropsForm, FOutputForm };
+	for (int i = 0; i < 4; i++)
+	{
+		TMenuItem *Mi = new TMenuItem(this);
+		Mi->Caption = DockForms[i]->Caption;
+		Mi->Tag     = i;
+		Mi->Checked = false;		// the check mark is drawn by MenuItemAdvancedDrawItem from the live window state only
+		g_DockMenuItems[i] = Mi;
+		Mi->OnClick = DockWindowMenuClick;
+		mnuView->Add(Mi);
+	}
+	// layout items: 保存布局 / 加载布局 / 锁定布局 (N7 / N8 come from the .dfm)
+	N7->OnClick = SaveLayoutClick;
+	N8->OnClick = LockLayoutClick;
+	TMenuItem *Ld = new TMenuItem(this);
+	Ld->Caption = L"\u52A0\u8F7D\u5E03\u5C40";			// 加载布局
+	Ld->OnClick = LoadLayoutClick;
+	mnuView->Insert(mnuView->IndexOf(N7) + 1, Ld);
+	mnuView->OnClick = ViewMenuOpen;		// refresh the check marks each time the menu opens
+	HookMenuItems(mnuView);		// the menus are owner-drawn: attach the draw handlers to the new items too
+
+	// the mouse filter that enforces the lock (the padlock is drawn in front of the menu item)
+	FLayoutLocked = false;
+	if (!g_LayoutHook)
+	{
+		g_LayoutHook = new TLayoutLockHook();
+		g_LayoutHook->Prev = Application->OnMessage;
+		Application->OnMessage = g_LayoutHook->OnMsg;
+	}
+	g_LayoutHook->Forms[0] = FExploreForm;
+	g_LayoutHook->Forms[1] = FCreateForm;
+	g_LayoutHook->Forms[2] = FPropsForm;
+	g_LayoutHook->Forms[3] = FOutputForm;
+}
+//---------------------------------------------------------------------------
+// Is the dock window really on screen right now? Asked from Windows itself, not from VCL properties
+// (JvDocking hides windows by hiding / collapsing the zone or host around them): the window must be
+// visible, and what is left of it after clipping with every parent window must not be empty.
+// Windows that were hidden through the View menu. JvDocking may collapse the zone without hiding the
+// form's HWND (or do it later, animated), so the geometry test alone can still say "visible" right after
+// HideDockForm. This list is authoritative until the window is shown again (menu click or OnFormShow).
+struct TMenuHiddenInfo { TForm *F; DWORD Tick; };
+static std::vector<TMenuHiddenInfo> g_MenuHiddenForms;
+static bool IsMenuHidden(TForm *F)
+{
+	for (size_t i = 0; i < g_MenuHiddenForms.size(); i++)
+		if (g_MenuHiddenForms[i].F == F)
+			return true;
+	return false;
+}
+// AFromEvent = true: called from an OnFormShow event. JvDocking can fire that event as a side effect of
+// HideDockForm itself, so events arriving right after the hide are ignored.
+static void SetMenuHidden(TForm *F, bool AHidden, bool AFromEvent = false)
+{
+	for (size_t i = 0; i < g_MenuHiddenForms.size(); i++)
+	{
+		if (g_MenuHiddenForms[i].F != F)
+			continue;
+		if (!AHidden)
+		{
+			if (AFromEvent && ::GetTickCount() - g_MenuHiddenForms[i].Tick < 1500)
+				return;
+			g_MenuHiddenForms.erase(g_MenuHiddenForms.begin() + i);
+		}
+		else
+			g_MenuHiddenForms[i].Tick = ::GetTickCount();
+		return;
+	}
+	if (AHidden)
+	{
+		TMenuHiddenInfo Info;
+		Info.F = F;
+		Info.Tick = ::GetTickCount();
+		g_MenuHiddenForms.push_back(Info);
+	}
+}
+//---------------------------------------------------------------------------
+static bool DockFormReallyShown(TForm *F)
+{
+	if (!F || !F->HandleAllocated())
+		return false;
+	if (IsMenuHidden(F))
+		return false;
+	if (!F->Visible)
+		return false;
+	HWND H = F->Handle;
+	if (!::IsWindowVisible(H))
+		return false;
+	RECT R;
+	::GetWindowRect(H, &R);
+	HWND Desktop = ::GetDesktopWindow();
+	for (HWND P = ::GetAncestor(H, GA_PARENT); P && P != Desktop; P = ::GetAncestor(P, GA_PARENT))
+	{
+		RECT C, PR;
+		::GetClientRect(P, &C);
+		POINT TL = { C.left, C.top };
+		::ClientToScreen(P, &TL);
+		PR.left = TL.x;  PR.top = TL.y;
+		PR.right = TL.x + (C.right - C.left);
+		PR.bottom = TL.y + (C.bottom - C.top);
+		RECT X;
+		if (!::IntersectRect(&X, &R, &PR))
+			return false;
+		R = X;
+	}
+	return (R.right - R.left) > 8 && (R.bottom - R.top) > 8;
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::DockWindowMenuClick(TObject *Sender)
+{
+	TMenuItem *Mi = dynamic_cast<TMenuItem*>(Sender);
+	if (!Mi)
+		return;
+	TForm *F = NULL;
+	switch ((int)Mi->Tag)
+	{
+		case 0: F = FExploreForm; break;
+		case 1: F = FCreateForm;  break;
+		case 2: F = FPropsForm;   break;
+		case 3: F = FOutputForm;  break;
+	}
+	if (!F)
+		return;
+	int Idx = (int)Mi->Tag;
+	if (DockFormReallyShown(F))
+	{
+		if (FLayoutLocked)
+		{
+			CmdLog(L"\u5E03\u5C40\u5DF2\u9501\u5B9A\uFF0C\u4E0D\u80FD\u9690\u85CF\u7A97\u53E3");	// 布局已锁定，不能隐藏窗口
+			return;
+		}
+		HideDockForm(F);		// second click: hide it
+		SetMenuHidden(F, true);	// remember it: the check mark must go away at once
+	}
+	else
+	{
+		SetMenuHidden(F, false);
+		ShowDockForm(F);
+	}
+	ViewMenuOpen(NULL);
+}
+//---------------------------------------------------------------------------
+// View menu opens: a check mark in front of every dock window that is open
+void __fastcall TForm1::ViewMenuOpen(TObject *Sender)
+{
+	// Dock window entries never use TMenuItem::Checked (nothing else may draw a check for them);
+	// the owner-draw handler asks the window state itself every time the item is painted.
+	for (int i = 0; i < 4; i++)
+		if (g_DockMenuItems[i])
+			g_DockMenuItems[i]->Checked = false;
+}
+//---------------------------------------------------------------------------
+// Dock a (hidden) dock window into a zone and open it the JvDocking way.
+// ShowDockForm() - not Form->Show() - is what opens the zone: every dock zone starts with size 0 and is
+// only sized by TJvDockPanel.ShowDockPanel, which ShowDockForm calls (TJvDockPanel.DockDrop does it only
+// for a form that is already visible, i.e. a real mouse drop). The library's own ManualTabDock does the same.
+static void DockAndShow(TForm *F, TWinControl *Site, TControl *Drop, TAlign Side)
+{
+	F->ManualDock(Site, Drop, Side);
+	ShowDockForm(F);
+}
+//---------------------------------------------------------------------------
+// Start layout (like the old LMD layout): Explore left, Create above Properties on the right,
+// Output at the bottom. The user can drag the windows anywhere afterwards.
+void __fastcall TForm1::LayoutDockForms()
+{
+	if (FDockLaidOut || !FDockServer)
+		return;
+	FDockLaidOut = true;
+
+	// size of a zone when it opens (ShowDockForm takes it from the dock panel itself)
+	FDockServer->LeftDockPanel->LRDockWidth    = 240;
+	FDockServer->RightDockPanel->LRDockWidth   = 260;
+	FDockServer->BottomDockPanel->TBDockHeight = 240;
+
+	DockAndShow(FExploreForm, FDockServer->LeftDockPanel,   NULL,        alClient);
+	DockAndShow(FCreateForm,  FDockServer->RightDockPanel,  NULL,        alClient);
+	DockAndShow(FPropsForm,   FDockServer->RightDockPanel,  FCreateForm, alBottom);		// stacked under "Create"
+	DockAndShow(FOutputForm,  FDockServer->BottomDockPanel, NULL,        alClient);	// 命令栏：历史 + 输入行
+	// docking re-created the window handles of the children: set the dark scroll bars again
+	DockFormShown(NULL);
+}
+//---------------------------------------------------------------------------
+// Docking / floating a window makes VCL re-create the handles of its children, which resets the
+// SetWindowTheme() dark scroll bars - apply them again.
+void __fastcall TForm1::DockFormShown(TObject *Sender)
+{
+	// A TJvDockClient fires OnFormShow when its window is shown again (menu, drag, layout load):
+	// it is no longer "hidden by the menu". The client is owned by its dock form.
+	TJvDockClient *Dc = dynamic_cast<TJvDockClient*>(Sender);
+	if (Dc)
+	{
+		TForm *Owner = dynamic_cast<TForm*>(Dc->Owner);
+		if (Owner)
+			SetMenuHidden(Owner, false, true);
+	}
+	if (TreeView1)
+		SetControlTheme(TreeView1, FDark);
+	ApplyPropsTheme();
+	ApplyDockTheme();
+}
+//---------------------------------------------------------------------------
+// TControl.Color / TWinControl.ParentBackground are protected; JvDocking paints its dock zones and the
+// splitters between docked windows with the zone's Color, so make them reachable.
+struct TDockCtlAccess : public TWinControl
+{
+public:
+	__property Color;
+	__property ParentBackground;
+	__property Font;
+};
+// TCustomControl.Canvas is protected too; the tab text of the auto-hide strip is drawn with Canvas.Font
+struct TCtlCanvasAccess : public TCustomControl
+{
+public:
+	__property Canvas;
+};
+static void SetDockCtlColor(TWinControl *C, TColor AColor)
+{
+	if (!C)
+		return;
+	TDockCtlAccess *A = static_cast<TDockCtlAccess*>(C);
+	if (!A->ParentBackground && A->Color == AColor)
+		return;							// already themed
+	A->ParentBackground = false;		// draw with Color, not with the parent's background
+	A->Color            = AColor;
+	C->Invalidate();
+}
+//---------------------------------------------------------------------------
+// TCustomPanel 的斜边属性是 protected，开个口子
+struct TPanelAccess : public TCustomPanel
+{
+public:
+	__property BevelInner;
+	__property BevelOuter;
+	__property BevelWidth;
+	__property BorderWidth;
+};
+// 自动隐藏用到的标签条 / 弹出面板 / 分隔条：去白边、用主题色、字体白色
+//
+// JVCL 的弹出分隔条 TJvDockVSPopupPanelSplitter 在 Paint 里用 DrawFrameControl(按钮凸边) 画了一圈白边，
+// 画完才触发 OnPaint —— 所以在 OnPaint 里用主题色把整个条再盖一遍即可，不用改 JVCL 源码。
+//
+// 可选：JVCL 里还有两处写死的 clGray 边框（标签条的小方框、未激活标题条的圆角框）。
+// 如果按「JVCL补丁说明.txt」改了 JvDockVSNetStyle.pas 并重编了 JVCL 包，就打开下面这行：
+#define JVDOCK_BORDER_PATCH
+static const TColor kNoColor = (TColor)0x1FFFFFFF;	// same value as clNone (clNone is ambiguous: Vcl.Graphics vs System.ZLib)
+static TColor g_DockBar = kNoColor;	// zones / splitters / channel colour (set by ApplyDockTheme)
+static TColor g_DockTxt = kNoColor;	// font colour of the auto-hide tabs
+
+//---------------------------------------------------------------------------
+// Docking guides ("浮动归位时的引导图标", like LMD DockingPack / Visual Studio 2005-2012).
+// While a dock window is being dragged, small click-through icons are shown:
+//   * four arrows at the edges of the dock area,
+//   * a cross (centre + 4 arrows) in the middle of the dock window / zone under the cursor.
+// They are only an indication - the real docking is still done by JvDocking (preview rectangle).
+// The icons never take mouse or focus (WS_EX_TRANSPARENT + HTTRANSPARENT + NOACTIVATE).
+static TJvDockServer *g_DockServerPtr = NULL;		// set by ApplyDockTheme
+static bool           g_DockDark      = true;
+static const int      kGuideSize      = 32;
+static HWND           g_GuideWnd[9]   = { 0 };		// 0 centre, 1-4 cross L/T/R/B, 5-8 edge L/T/R/B
+static int            g_GuideHot      = -1;
+static const wchar_t *kGuideClass     = L"JvDockGuideWnd";
+// direction of each icon: 0 = centre, 1 = left, 2 = top, 3 = right, 4 = bottom
+static const int      kGuideDir[9]    = { 0, 1, 2, 3, 4, 1, 2, 3, 4 };
+
+static LRESULT CALLBACK GuideWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+	switch (m)
+	{
+	case WM_NCHITTEST:
+		return HTTRANSPARENT;						// let JvDocking's hit-testing see what is below
+	case WM_MOUSEACTIVATE:
+		return MA_NOACTIVATE;
+	case WM_ERASEBKGND:
+		return 1;
+	case WM_PAINT:
+	{
+		PAINTSTRUCT ps;
+		HDC dc = ::BeginPaint(h, &ps);
+		int idx = (int)::GetWindowLongPtr(h, GWLP_USERDATA);
+		bool hot = (idx == g_GuideHot);
+		RECT rc;
+		::GetClientRect(h, &rc);
+
+		COLORREF bg   = hot ? RGB(0, 122, 204) : (g_DockDark ? RGB(45, 45, 48)  : RGB(238, 238, 242));
+		COLORREF edge = g_DockDark ? RGB(0, 122, 204) : RGB(130, 130, 140);
+		COLORREF fg   = (hot || g_DockDark) ? RGB(255, 255, 255) : RGB(40, 40, 40);
+
+		HBRUSH hb = ::CreateSolidBrush(bg);
+		HPEN   hp = ::CreatePen(PS_SOLID, 1, edge);
+		HGDIOBJ ob = ::SelectObject(dc, hb);
+		HGDIOBJ op = ::SelectObject(dc, hp);
+		::RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
+
+		HBRUSH fb = ::CreateSolidBrush(fg);
+		HPEN   fp = ::CreatePen(PS_SOLID, 1, fg);
+		::SelectObject(dc, fb);
+		::SelectObject(dc, fp);
+		int cx = (rc.left + rc.right) / 2, cy = (rc.top + rc.bottom) / 2;
+		POINT t[3];
+		switch (kGuideDir[idx])
+		{
+		case 1: t[0].x = cx - 6; t[0].y = cy;     t[1].x = cx + 4; t[1].y = cy - 7; t[2].x = cx + 4; t[2].y = cy + 7; ::Polygon(dc, t, 3); break;
+		case 3: t[0].x = cx + 6; t[0].y = cy;     t[1].x = cx - 4; t[1].y = cy - 7; t[2].x = cx - 4; t[2].y = cy + 7; ::Polygon(dc, t, 3); break;
+		case 2: t[0].x = cx;     t[0].y = cy - 6; t[1].x = cx - 7; t[1].y = cy + 4; t[2].x = cx + 7; t[2].y = cy + 4; ::Polygon(dc, t, 3); break;
+		case 4: t[0].x = cx;     t[0].y = cy + 6; t[1].x = cx - 7; t[1].y = cy - 4; t[2].x = cx + 7; t[2].y = cy - 4; ::Polygon(dc, t, 3); break;
+		default:									// centre: a small window with a title bar
+			::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+			::Rectangle(dc, cx - 9, cy - 8, cx + 10, cy + 9);
+			::Rectangle(dc, cx - 9, cy - 8, cx + 10, cy - 3);
+			break;
+		}
+		::SelectObject(dc, ob);
+		::SelectObject(dc, op);
+		::DeleteObject(hb); ::DeleteObject(hp); ::DeleteObject(fb); ::DeleteObject(fp);
+		::EndPaint(h, &ps);
+		return 0;
+	}
+	}
+	return ::DefWindowProc(h, m, w, l);
+}
+
+static void EnsureGuideWindows()
+{
+	if (g_GuideWnd[0])
+		return;
+	WNDCLASSW wc;
+	::ZeroMemory(&wc, sizeof(wc));
+	wc.lpfnWndProc   = GuideWndProc;
+	wc.hInstance     = HInstance;
+	wc.lpszClassName = kGuideClass;
+	wc.hCursor       = ::LoadCursor(NULL, IDC_ARROW);
+	::RegisterClassW(&wc);						// fails harmlessly if already registered
+	for (int i = 0; i < 9; i++)
+	{
+		HWND h = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+			kGuideClass, L"", WS_POPUP, 0, 0, kGuideSize, kGuideSize, NULL, NULL, HInstance, NULL);
+		if (h)
+		{
+			::SetWindowLongPtr(h, GWLP_USERDATA, i);
+			::SetLayeredWindowAttributes(h, 0, 225, LWA_ALPHA);
+		}
+		g_GuideWnd[i] = h;
+	}
+}
+
+static void PlaceGuide(int i, int x, int y, bool Show)
+{
+	HWND h = g_GuideWnd[i];
+	if (!h)
+		return;
+	if (!Show)
+	{
+		if (::IsWindowVisible(h))
+			::ShowWindow(h, SW_HIDE);
+		return;
+	}
+	::SetWindowPos(h, HWND_TOPMOST, x - kGuideSize / 2, y - kGuideSize / 2, kGuideSize, kGuideSize,
+		SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+static void HideGuides()
+{
+	for (int i = 0; i < 9; i++)
+		PlaceGuide(i, 0, 0, false);
+	g_GuideHot = -1;
+}
+
+// union of the screen rectangles of the four dock panels = the dock area
+static bool GetDockAreaRect(TRect &Out)
+{
+	if (!g_DockServerPtr)
+		return false;
+	TWinControl *P[4] = { g_DockServerPtr->LeftDockPanel, g_DockServerPtr->RightDockPanel,
+	                      g_DockServerPtr->TopDockPanel,  g_DockServerPtr->BottomDockPanel };
+	bool Any = false;
+	for (int i = 0; i < 4; i++)
+	{
+		if (!P[i] || !P[i]->Parent)
+			continue;
+		TPoint a = P[i]->Parent->ClientToScreen(Point(P[i]->Left, P[i]->Top));
+		TRect  r(a.x, a.y, a.x + P[i]->Width, a.y + P[i]->Height);
+		if (!Any) { Out = r; Any = true; }
+		else
+		{
+			Out.Left   = std::min((int)Out.Left,   (int)r.Left);
+			Out.Top    = std::min((int)Out.Top,    (int)r.Top);
+			Out.Right  = std::max((int)Out.Right,  (int)r.Right);
+			Out.Bottom = std::max((int)Out.Bottom, (int)r.Bottom);
+		}
+	}
+	return Any && Out.Right > Out.Left && Out.Bottom > Out.Top;
+}
+
+// ---- full version: the icons are selectable --------------------------------------------------------------
+// While a drag is running the icons only exist as click-through windows, so the hit test is done by position.
+// A thread mouse hook sees the WM_LBUTTONUP *before* JvDocking handles it: if the cursor is over an icon we
+// remember what was chosen and make JvDocking just float the window (DragTarget = NULL); the next timer tick
+// then docks it to the chosen place with ManualDock.
+static TPoint       g_GPos[9];
+static bool         g_GVis[9] = { false };
+static TWinControl *g_GTarget = NULL;			// window / zone under the cursor when the cross was shown
+static TControl    *g_GDropOn = NULL;
+struct TPendingDock { TControl *Ctl; int Idx; TWinControl *Site; TControl *DropOn; bool Valid; };
+static TPendingDock g_Pending = { NULL, -1, NULL, NULL, false };
+static HHOOK        g_MouseHook = NULL;
+
+static LRESULT CALLBACK GuideMouseHook(int Code, WPARAM W, LPARAM L)
+{
+	if (Code >= 0 && W == WM_LBUTTONUP && g_GuideWnd[0] && JvGlobalDockManager)
+	{
+		TJvDockDragDockObject *DO = JvGlobalDockManager->DragObject;
+		MOUSEHOOKSTRUCT *mh = (MOUSEHOOKSTRUCT*)L;
+		if (DO && mh)
+		{
+			int Hot = -1;
+			for (int i = 0; i < 9; i++)
+				if (g_GVis[i] && ::IsWindowVisible(g_GuideWnd[i]) &&
+				    abs(mh->pt.x - g_GPos[i].x) <= kGuideSize / 2 && abs(mh->pt.y - g_GPos[i].y) <= kGuideSize / 2)
+					Hot = i;
+			if (Hot >= 0 && DO->Control)
+			{
+				g_Pending.Ctl    = DO->Control;
+				g_Pending.Idx    = Hot;
+				g_Pending.Site   = g_GTarget;
+				g_Pending.DropOn = g_GDropOn;
+				g_Pending.Valid  = true;
+				DO->DragTarget   = NULL;		// JvDocking: just float it, we dock it right after
+			}
+		}
+	}
+	return ::CallNextHookEx(g_MouseHook, Code, W, L);
+}
+
+static void DoPendingDock()
+{
+	if (!g_Pending.Valid)
+		return;
+	if (JvGlobalDockManager && JvGlobalDockManager->DragObject)
+		return;									// JvDocking is still finishing the drop
+	g_Pending.Valid = false;
+	const int Dir = kGuideDir[g_Pending.Idx];
+	TAlign Al = (Dir == 1) ? alLeft : (Dir == 2) ? alTop : (Dir == 3) ? alRight : (Dir == 4) ? alBottom : alClient;
+	TWinControl *Site = NULL;
+	TControl    *DropOn = NULL;
+	if (g_Pending.Idx >= 5)						// edge arrows: the dock zones of the form
+	{
+		if (!g_DockServerPtr)
+			return;
+		Site = (Dir == 1) ? g_DockServerPtr->LeftDockPanel  : (Dir == 2) ? g_DockServerPtr->TopDockPanel
+		     : (Dir == 3) ? g_DockServerPtr->RightDockPanel : g_DockServerPtr->BottomDockPanel;
+	}
+	else										// cross: relative to the window / zone that was under the cursor
+	{
+		Site   = g_Pending.Site;
+		DropOn = g_Pending.DropOn;
+	}
+	if (!Site || !g_Pending.Ctl || g_Pending.Ctl == Site)
+		return;
+	try
+	{
+		g_Pending.Ctl->ManualDock(Site, DropOn, Al);
+		g_Pending.Ctl->Show();
+	}
+	catch (Exception &)
+	{
+		// the target went away while the window was floating - leave the window floating
+	}
+}
+
+// called by a fast timer: shows / hides / highlights the guides
+static void UpdateDockGuides(TForm *Form)
+{
+	TJvDockDragDockObject *DO = JvGlobalDockManager ? JvGlobalDockManager->DragObject : NULL;
+	static bool  s_seen = false;
+	static bool  s_shown = false;
+	static POINT s_start = { 0, 0 };
+	POINT cur;
+	::GetCursorPos(&cur);
+
+	if (!DO || !(::GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+	{
+		s_seen  = false;
+		s_shown = false;
+		if (g_GuideWnd[0])
+			HideGuides();
+		return;
+	}
+	if (!s_seen)
+	{
+		s_seen  = true;
+		s_start = cur;
+	}
+	if (!s_shown && abs(cur.x - s_start.x) < 8 && abs(cur.y - s_start.y) < 8)
+		return;									// just a click on the title strip, not a drag yet
+	s_shown = true;
+
+	EnsureGuideWindows();
+	g_DockDark = (g_DockBar != kNoColor) && (GetRValue(ColorToRGB(g_DockBar)) < 128);
+
+	TPoint Pos[9];
+	bool   Vis[9] = { false };
+
+	// edges of the dock area
+	TRect Area;
+	if (GetDockAreaRect(Area))
+	{
+		const int m = kGuideSize / 2 + 8;
+		int mx = (Area.Left + Area.Right) / 2, my = (Area.Top + Area.Bottom) / 2;
+		Pos[5] = Point(Area.Left  + m, my);  Vis[5] = true;
+		Pos[6] = Point(mx, Area.Top    + m); Vis[6] = true;
+		Pos[7] = Point(Area.Right - m, my);  Vis[7] = true;
+		Pos[8] = Point(mx, Area.Bottom - m); Vis[8] = true;
+	}
+
+	// cross in the middle of the window / zone under the cursor
+	TWinControl *Tg = DO->TargetControl;
+	if (Tg && Tg->HandleAllocated() && Tg->Visible && Tg->ClientWidth > 3 * kGuideSize && Tg->ClientHeight > 3 * kGuideSize)
+	{
+		TPoint o = Tg->ClientToScreen(Point(0, 0));
+		int cx = o.x + Tg->ClientWidth / 2, cy = o.y + Tg->ClientHeight / 2;
+		const int d = kGuideSize + 4;
+		Pos[0] = Point(cx, cy);     Vis[0] = true;
+		Pos[1] = Point(cx - d, cy); Vis[1] = true;
+		Pos[2] = Point(cx, cy - d); Vis[2] = true;
+		Pos[3] = Point(cx + d, cy); Vis[3] = true;
+		Pos[4] = Point(cx, cy + d); Vis[4] = true;
+	}
+
+	for (int i = 0; i < 9; i++)
+	{
+		g_GPos[i] = Pos[i];
+		g_GVis[i] = Vis[i];
+	}
+	g_GTarget = Vis[0] ? Tg : NULL;
+	g_GDropOn = Vis[0] ? DO->DropOnControl : NULL;
+
+	int Hot = -1;
+	for (int i = 0; i < 9; i++)
+		if (Vis[i] && abs(cur.x - Pos[i].x) <= kGuideSize / 2 && abs(cur.y - Pos[i].y) <= kGuideSize / 2)
+			Hot = i;
+
+	for (int i = 0; i < 9; i++)
+		PlaceGuide(i, Pos[i].x, Pos[i].y, Vis[i]);
+
+	if (Hot != g_GuideHot)
+	{
+		int Old = g_GuideHot;
+		g_GuideHot = Hot;
+		if (Old >= 0 && g_GuideWnd[Old]) ::InvalidateRect(g_GuideWnd[Old], NULL, FALSE);
+		if (Hot >= 0 && g_GuideWnd[Hot]) ::InvalidateRect(g_GuideWnd[Hot], NULL, FALSE);
+	}
+}
+
+class TDockFlatHelper : public TObject
+{
+public:
+	TForm *Form;
+	__fastcall TDockFlatHelper(TForm *AForm) : TObject(), Form(AForm) {}
+	void __fastcall SplitterPaint(TObject *Sender);
+	void __fastcall Tick(TObject *Sender);
+	void __fastcall GuideTick(TObject *Sender);
+};
+static TDockFlatHelper *g_DockFlat = NULL;
+
+void __fastcall TDockFlatHelper::SplitterPaint(TObject *Sender)
+{
+	TJvDockVSPopupPanelSplitter *S = dynamic_cast<TJvDockVSPopupPanelSplitter*>(Sender);
+	if (!S || g_DockBar == kNoColor)
+		return;
+	S->Canvas->Brush->Color = g_DockBar;
+	S->Canvas->FillRect(S->ClientRect);
+}
+
+static void FlattenAutoHideCtl(TControl *C, TColor AColor)
+{
+	if (!C)
+		return;
+	if (C->ClassName().Pos(L"JvDockVS") > 0)
+	{
+		C->StyleElements = TStyleElements();
+
+		TCustomPanel *P = dynamic_cast<TCustomPanel*>(C);
+		if (P)
+		{
+			TPanelAccess *A = static_cast<TPanelAccess*>(P);
+			A->BevelInner  = bvNone;
+			A->BevelOuter  = bvNone;
+			A->BorderWidth = 0;
+		}
+
+		TWinControl *W1 = dynamic_cast<TWinControl*>(C);
+		if (W1)
+			SetDockCtlColor(W1, AColor);
+
+		// splitter of the pop-up (auto-hidden) window: cover its 3D frame
+		TJvDockVSPopupPanelSplitter *Sp = dynamic_cast<TJvDockVSPopupPanelSplitter*>(C);
+		if (Sp && g_DockFlat && !Sp->OnPaint)
+		{
+			Sp->OnPaint = g_DockFlat->SplitterPaint;
+			Sp->Invalidate();
+		}
+
+		// tab strip of the auto-hidden windows: white text
+		TJvDockVSChannel *Ch = dynamic_cast<TJvDockVSChannel*>(C);
+		if (Ch && g_DockTxt != kNoColor)
+		{
+			TDockCtlAccess *FA = static_cast<TDockCtlAccess*>(static_cast<TWinControl*>(Ch));
+			TCtlCanvasAccess *CA = static_cast<TCtlCanvasAccess*>(static_cast<TCustomControl*>(Ch));
+			bool Changed = false;
+			if (FA->Font->Color != g_DockTxt)
+			{
+				FA->Font->Color = g_DockTxt;
+				Changed = true;
+			}
+			// JVCL replaces Canvas.Font (rotated text on the left/right strip), so set the canvas font too
+			if (CA->Canvas->Font->Color != g_DockTxt)
+			{
+				CA->Canvas->Font->Color = g_DockTxt;
+				Changed = true;
+			}
+			if (Changed)
+				Ch->Invalidate();
+		}
+	}
+	TWinControl *W = dynamic_cast<TWinControl*>(C);
+	if (W)
+		for (int i = 0; i < W->ControlCount; i++)
+			FlattenAutoHideCtl(W->Controls[i], AColor);
+}
+
+void __fastcall TDockFlatHelper::GuideTick(TObject *Sender)
+{
+	DoPendingDock();
+	UpdateDockGuides(Form);
+}
+
+void __fastcall TDockFlatHelper::Tick(TObject *Sender)
+{
+	// the pop-up panel / splitter are created lazily on the first auto-hide; catch them here
+	if (Form && g_DockBar != kNoColor)
+		FlattenAutoHideCtl(Form, g_DockBar);
+}
+//---------------------------------------------------------------------------
+// Dock windows follow the Dark / Light theme like the rest of the window.
+// Dark = the same colours as the "VS2012Dark" style of LMD DockingPack (Visual Studio 2012 dark theme):
+//   body of a dock window ........... #252526
+//   dock zones + splitters ........... #2D2D30
+//   title strip ...................... inactive #2D2D30 / grey text, active #007ACC / white text
+//   tabs of a tab group .............. active #007ACC, inactive #2D2D30, hot-track #1C97EA
+void __fastcall TForm1::ApplyDockTheme()
+{
+	if (!FDockServer || !FDockStyle)
+		return;
+
+	const bool D = FDark;
+	const TColor Bar    = D ? Rgb(45, 45, 48)    : ThemeBarColor(false);	// dock zones, splitters, auto-hide strip
+	const TColor Body   = D ? Rgb(37, 37, 38)    : clWhite;
+	const TColor Strip  = D ? Rgb(45, 45, 48)    : Rgb(238, 238, 242);		// inactive title strip / inactive tab
+	const TColor Active = D ? Rgb(0, 122, 204)   : Rgb(206, 220, 240);		// active title strip / active tab
+	const TColor TxtOn  = D ? clWhite            : clBlack;
+	const TColor TxtOff = D ? clWhite            : Rgb(60, 60, 60);		// inactive text: white on dark
+
+	// the dock windows themselves (the VCL style must not override Color)
+	TForm *DockForms[4] = { FExploreForm, FCreateForm, FPropsForm, FOutputForm };
+	for (int i = 0; i < 4; i++)
+	{
+		if (!DockForms[i])
+			continue;
+		DockForms[i]->StyleElements = TStyleElements();
+		DockForms[i]->Color         = Body;
+		DockForms[i]->Font->Color   = TxtOn;
+	}
+
+	// the four dock zones and their splitters
+	TWinControl *Zones[8] = {
+		FDockServer->LeftDockPanel,  FDockServer->RightDockPanel,
+		FDockServer->TopDockPanel,   FDockServer->BottomDockPanel,
+		FDockServer->LeftSplitter,   FDockServer->RightSplitter,
+		FDockServer->TopSplitter,    FDockServer->BottomSplitter };
+	for (int i = 0; i < 8; i++)
+		SetDockCtlColor(Zones[i], Bar);
+
+	// tab-host / conjoin forms that JvDocking creates when windows are dropped onto each other
+	for (int i = 0; i < Screen->FormCount; i++)
+	{
+		TForm *H = Screen->Forms[i];
+		if (dynamic_cast<TJvDockTabHostForm*>(H) || dynamic_cast<TJvDockConjoinHostForm*>(H))
+		{
+			H->StyleElements = TStyleElements();
+			H->Color         = Body;
+		}
+	}
+
+	// title strip of a docked window ("grabber"); setting a colour switches off "use system colours"
+	TJvDockVIDConjoinServerOption *Co = dynamic_cast<TJvDockVIDConjoinServerOption*>(FDockStyle->ConjoinServerOption);
+	if (Co)
+	{
+		Co->BeginUpdate();
+		Co->ActiveTitleStartColor   = Active;
+		Co->ActiveTitleEndColor     = Active;
+		Co->InactiveTitleStartColor = Strip;
+		Co->InactiveTitleEndColor   = Strip;
+		Co->ActiveFont->Color       = TxtOn;
+		Co->InactiveFont->Color     = TxtOff;
+		Co->EndUpdate();
+	}
+
+	// tabs of a tab group
+	TJvDockVIDTabServerOption *Ta = dynamic_cast<TJvDockVIDTabServerOption*>(FDockStyle->TabServerOption);
+	if (Ta)
+	{
+		Ta->BeginUpdate();
+		Ta->ActiveSheetColor   = Active;
+		Ta->InactiveSheetColor = Strip;
+		Ta->HotTrackColor      = D ? Rgb(28, 151, 234) : clBlue;
+		Ta->ActiveFont->Color  = TxtOn;
+		Ta->InactiveFont->Color = TxtOff;
+		Ta->EndUpdate();
+	}
+
+	// strip of auto-hidden windows (VS.NET style)
+	if (FDockStyle->ChannelOption)
+		FDockStyle->ChannelOption->TabColor = Bar;
+
+	g_DockBar = Bar;
+	g_DockTxt = TxtOn;
+	g_DockServerPtr = FDockServer;
+#ifdef JVDOCK_BORDER_PATCH
+	Jvdockvsnetstyle::JvDockVSBorderColor = Bar;	// JVCL 补丁：标签框 / 标题条圆角框的颜色
+#endif
+	FlattenAutoHideCtl(this, Bar);	// 自动隐藏的标签条 / 弹出面板 / 分隔条
+
+	// keep it applied after pop-up panels get created later
+	if (!g_DockFlat)
+	{
+		g_DockFlat = new TDockFlatHelper(this);
+		TTimer *T = new TTimer(this);
+		T->Interval = 300;
+		T->OnTimer  = g_DockFlat->Tick;
+		T->Enabled  = true;
+
+		TTimer *G = new TTimer(this);			// drag-and-drop docking guides
+		G->Interval = 40;
+		G->OnTimer  = g_DockFlat->GuideTick;
+		G->Enabled  = true;
+
+		if (!g_MouseHook)
+			g_MouseHook = ::SetWindowsHookEx(WH_MOUSE, GuideMouseHook, NULL, ::GetCurrentThreadId());
+	}
 }
 //---------------------------------------------------------------------------
 void __fastcall TForm1::FormCreate(TObject *Sender)
@@ -1980,10 +3488,21 @@ void __fastcall TForm1::FormCreate(TObject *Sender)
 		W += TitleBarPanel1->CustomButtons->Items[I]->Width;
 	//FSearchBox->Margins->Right = W + (CustomTitleBar->CaptionButtonsRect.Right - CustomTitleBar->CaptionButtonsRect.Left) + 8;
 	(void)W;	// only used by the commented-out search box code above
+	// Dock server + dock windows first (they own the parents of the tree and the property list)
+	InitDockLayout();
+	// The document area is the centre of the form: the dock zones sit around it
 	FSdl = new TViewport3D(this);
-	FSdl->Parent = Document;      // LMD document panel
+	FSdl->Parent = this;
 	FSdl->Align  = alClient;
 	FSdl->OnSelect = ViewportSelect;
+	FSdl->OnSnapToggled = ViewportSnapToggled;		// S key <-> toolbar snap button
+	SnapSettingsChanged(NULL);						// give the viewport the snap settings
+	FSdl2 = new TViewport2D(this);   // 2D grid view, same parent; only one of FSdl / FSdl2 is visible
+	FSdl2->Parent = this;
+	FSdl2->Align  = alClient;
+	FSdl2->ContextMenu->OwnerDraw = true;		// right-click menu of the 2D node editor follows the theme like the other menus
+	HookMenuItems(FSdl2->ContextMenu->Items);
+	SetViewMode(FViewMode);          // show the view that matches the toolbar (3D at start)
 	InitPropertyPanel();
 	InitFileTree();
 
@@ -1991,15 +3510,14 @@ void __fastcall TForm1::FormCreate(TObject *Sender)
 	ApplyTheme(true);
 }
 //---------------------------------------------------------------------------
-// Property panel (LMDDockPanel2): a two-column list "property / value"
+// Property panel (dock window FPropsForm): a two-column list "property / value"
 void __fastcall TForm1::InitPropertyPanel()
 {
-	LMDDockPanel2->Caption = L"\u5C5E\u6027";		// "Properties"
-	FProps = new TValueListEditor(this);
-	FProps->Parent = LMDDockPanel2;
+	FProps = new TScenePropertyEditor(this, FSdl);
+	FProps->Parent = FPropsForm;
 	FProps->Align  = alClient;
-	FProps->Options = FProps->Options >> goEditing >> goVertLine >> goHorzLine
-									>> goFixedVertLine >> goFixedHorzLine;	// display only; lines are drawn by PropsDrawCell
+	FProps->Options = FProps->Options << goEditing >> goVertLine >> goHorzLine
+										>> goFixedVertLine >> goFixedHorzLine;	// values editable; custom cell drawing retained
 	FProps->GridLineWidth     = 0;
 	FProps->BorderStyle       = bsNone;
 	FProps->DefaultRowHeight  = 22;
@@ -2095,19 +3613,43 @@ void __fastcall TForm1::ShowProperties()
 		{
 			const TSceneObj &O = FSdl->Obj(I);
 			FProps->Strings->Add(L"Name=" + O.Name);
-			FProps->Strings->Add(L"Type=Box");
+			FProps->Strings->Add(L"Type=" + (O.Kind.IsEmpty() ? String(L"Box") : O.Kind));
 			FProps->Strings->Add(L"Position X=" + F2(O.Pos.x));
 			FProps->Strings->Add(L"Position Y=" + F2(O.Pos.y));
 			FProps->Strings->Add(L"Position Z=" + F2(O.Pos.z));
+			FProps->Strings->Add(L"Rotation X=" + F2(O.Rot.x * 57.2957795131f));
+			FProps->Strings->Add(L"Rotation Y=" + F2(O.Rot.y * 57.2957795131f));
+			FProps->Strings->Add(L"Rotation Z=" + F2(O.Rot.z * 57.2957795131f));
 			FProps->Strings->Add(L"Length (X)=" + F2(O.Half.x * 2));
 			FProps->Strings->Add(L"Width (Y)=" + F2(O.Half.y * 2));
 			FProps->Strings->Add(L"Height (Z)=" + F2(O.Half.z * 2));
-			FProps->Strings->Add(L"Color=" + IntToStr(O.R) + L", " + IntToStr(O.G) + L", " + IntToStr(O.B));
+			FProps->Strings->Add(L"Color R=" + IntToStr(O.R));
+			FProps->Strings->Add(L"Color G=" + IntToStr(O.G));
+			FProps->Strings->Add(L"Color B=" + IntToStr(O.B));
 		}
 	}
 	__finally
 	{
 		FProps->Strings->EndUpdate();
+	}
+
+	// Nothing selected: the placeholder row must not be editable / keep the keyboard focus,
+	// otherwise Q W E R (tool shortcuts) are typed into it.
+	bool HasSel = FSdl->Selected >= 0 && FSdl->Selected < FSdl->ObjectCount();
+	if (HasSel)
+		FProps->Options = FProps->Options << goEditing;
+	else
+	{
+		FProps->EditorMode = false;
+		FProps->Options = FProps->Options >> goEditing;
+	}
+	// Selection came from the viewport: give the keyboard back to the viewport
+	if (!FProps->EditorMode && (ActiveControl == FProps || FProps->Focused()))
+	{
+		if (FSdl->CanFocus())
+			FSdl->SetFocus();
+		else
+			ActiveControl = NULL;
 	}
 }
 //---------------------------------------------------------------------------
@@ -2202,8 +3744,8 @@ void __fastcall TForm1::TitleBarPanel1Paint(TObject *Sender, TCanvas *Canvas, TR
 	TRect R = ARect;
 	//R.Left = tbrMain->Left + tbrMain->Width;
 	//R.Right = FSearchBox->Left;
-	int iconSize = 16; // �趨ϵͳ��׼������ͼ��ߴ�
-	int iconX = 3;    // ���߾�
+	int iconSize = 16; // 设定系统标准标题栏图标尺寸
+	int iconX = 3;    // 左侧边距
 	int iconY = R.Top + (R.Height() - iconSize) / 2;
 	if (Icon && !Icon->Empty) {
 		::DrawIconEx(Canvas->Handle, iconX, iconY, Icon->Handle, iconSize, iconSize, 0, NULL, DI_NORMAL);
@@ -2212,7 +3754,7 @@ void __fastcall TForm1::TitleBarPanel1Paint(TObject *Sender, TCanvas *Canvas, TR
 	TTextFormat TextFormat;
 	TextFormat << tfSingleLine << tfVerticalCenter << tfEndEllipsis << tfComposited;
 	TextFormat << tfLeft;
-	//����TextFormat << AlignStyles[static_cast<int>(taCenter)];
+	//居中TextFormat << AlignStyles[static_cast<int>(taCenter)];
 
 	// Use the TStyleManager (and thus Style Services) to render the text appropriately on the
 	// title bar surface
@@ -2237,7 +3779,7 @@ std::unique_ptr<TForm2> Dlg(new TForm2(this));
 	Dlg->ApplyTheme(FDark);
 	if (Dlg->ShowModal() == mrOk)
 	{
-		// �û�����"ȷ��"���������ȡ���ã����磺
+		// 用户点了"确定"，在这里读取设置，例如：
 		// bool X = Dlg->chkSomething->Checked;
 	}
 }
@@ -2253,7 +3795,14 @@ class TSnapSettingsForm : public TForm
 public:
 	__fastcall TSnapSettingsForm(TComponent *AOwner, TSnapSettings *S, TNotifyEvent AOnChanged);
 	void __fastcall RefreshFromSettings();
+	void __fastcall ApplyTheme(bool ADark);			// dark: theme bar colour + white text
 private:
+	TPanel *FStrip, *FPage[3];						// own tab strip + pages (fully themeable)
+	TLabel *FTab[3];
+	int     FPageIdx;
+	void __fastcall SelectPage(int I);
+	void __fastcall TabClick(TObject *Sender);
+	void __fastcall CheckLabelClick(TObject *Sender);
 	TSnapSettings *FS;
 	TNotifyEvent   FOnChanged;
 	bool           FLoading;
@@ -2279,14 +3828,37 @@ __fastcall TSnapSettingsForm::TSnapSettingsForm(TComponent *AOwner, TSnapSetting
 
 	cbEnable = AddCheck(this, L"\u542F\u7528\u6355\u6349", 12, 10, 200);
 
-	TPageControl *Pages = new TPageControl(this);
-	Pages->Parent = this;
-	Pages->SetBounds(8, 38, 324, 280);
+	// own tab strip + three pages instead of TPageControl (a native tab control cannot be darkened)
+	static const wchar_t *const TabCaps[3] = { L"\u6355\u6349", L"\u9009\u9879", L"\u4E3B\u6805\u683C" };
+	FStrip = new TPanel(this);
+	FStrip->Parent = this;
+	FStrip->SetBounds(8, 38, 324, 26);
+	FStrip->BevelOuter = bvNone;
+	FStrip->ShowCaption = false;
+	FStrip->ParentBackground = false;
+	for (int i = 0; i < 3; i++)
+	{
+		FTab[i] = new TLabel(this);
+		FTab[i]->Parent = FStrip;
+		FTab[i]->AutoSize = false;
+		FTab[i]->SetBounds(i * 90, 0, 88, 26);
+		FTab[i]->Alignment = taCenter;
+		FTab[i]->Layout = tlCenter;
+		FTab[i]->Caption = TabCaps[i];
+		FTab[i]->Tag = i;
+		FTab[i]->Cursor = crHandPoint;
+		FTab[i]->OnClick = TabClick;
+		FPage[i] = new TPanel(this);
+		FPage[i]->Parent = this;
+		FPage[i]->SetBounds(8, 64, 324, 254);
+		FPage[i]->BevelOuter = bvNone;
+		FPage[i]->ShowCaption = false;
+		FPage[i]->ParentBackground = false;
+	}
+	FPageIdx = 0;
 
 	// ---- page 1: snap types ----
-	TTabSheet *tsSnap = new TTabSheet(Pages);
-	tsSnap->PageControl = Pages;
-	tsSnap->Caption = L"\u6355\u6349";
+	TWinControl *tsSnap = FPage[0];
 	cbGrid   = AddCheck(tsSnap, L"\u6805\u683C\u70B9",     16, 14,  200);
 	cbVertex = AddCheck(tsSnap, L"\u9876\u70B9",   16, 44,  200);
 	cbEdge   = AddCheck(tsSnap, L"\u8FB9",     16, 74,  200);
@@ -2295,9 +3867,7 @@ __fastcall TSnapSettingsForm::TSnapSettingsForm(TComponent *AOwner, TSnapSetting
 	cbBBox   = AddCheck(tsSnap, L"\u5305\u56F4\u76D2",     16, 164, 200);
 
 	// ---- page 2: options ----
-	TTabSheet *tsOpt = new TTabSheet(Pages);
-	tsOpt->PageControl = Pages;
-	tsOpt->Caption = L"\u9009\u9879";
+	TWinControl *tsOpt = FPage[1];
 	edRadius  = AddEdit(tsOpt, L"\u6355\u6349\u534A\u5F84(\u50CF\u7D20)",  16);
 	edAngle   = AddEdit(tsOpt, L"\u89D2\u5EA6\u6355\u6349(\u5EA6)",   50);
 	edPercent = AddEdit(tsOpt, L"\u767E\u5206\u6BD4\u6355\u6349(%)", 84);
@@ -2306,9 +3876,7 @@ __fastcall TSnapSettingsForm::TSnapSettingsForm(TComponent *AOwner, TSnapSetting
 	cbMarker = AddCheck(tsOpt, L"\u663E\u793A\u6355\u6349\u6807\u8BB0", 16, 160, 280);
 
 	// ---- page 3: home grid ----
-	TTabSheet *tsGrid = new TTabSheet(Pages);
-	tsGrid->PageControl = Pages;
-	tsGrid->Caption = L"\u4E3B\u6805\u683C";
+	TWinControl *tsGrid = FPage[2];
 	edGrid  = AddEdit(tsGrid, L"\u6805\u683C\u95F4\u8DDD", 16);
 	edMajor = AddEdit(tsGrid, L"\u4E3B\u7EBF\u95F4\u9694(\u6BCF N \u6761)",   50);
 	edMajor->NumbersOnly = true;
@@ -2319,17 +3887,125 @@ __fastcall TSnapSettingsForm::TSnapSettingsForm(TComponent *AOwner, TSnapSetting
 	btnClose->Caption = L"\u5173\u95ED";
 	btnClose->OnClick = CloseClick;
 
+	SelectPage(0);
+	ApplyTheme(true);
 	RefreshFromSettings();
+}
+//---------------------------------------------------------------------------
+void __fastcall TSnapSettingsForm::SelectPage(int I)
+{
+	FPageIdx = I;
+	for (int k = 0; k < 3; k++)
+	{
+		FPage[k]->Visible = (k == I);
+		FTab[k]->Font->Style = (k == I) ? (TFontStyles() << fsBold) : TFontStyles();
+	}
+	for (int k = 0; k < 3; k++)		// selected tab = page colour, the others = a bit lighter / darker
+		FTab[k]->Color = (k == I) ? FPage[k]->Color : FStrip->Color;
+}
+//---------------------------------------------------------------------------
+void __fastcall TSnapSettingsForm::TabClick(TObject *Sender)
+{
+	SelectPage(static_cast<TControl*>(Sender)->Tag);
+}
+//---------------------------------------------------------------------------
+// Dark: the neutral theme-bar colour (same as the property panel / command window) with white text.
+void __fastcall TSnapSettingsForm::ApplyTheme(bool ADark)
+{
+	const TColor Bg    = ADark ? Rgb(DARK_BAR_R, DARK_BAR_G, DARK_BAR_B) : clWhite;
+	const TColor Strip = ADark ? Rgb(45, 45, 45) : Rgb(240, 240, 240);
+	const TColor Edit  = ADark ? Rgb(45, 45, 45) : clWhite;
+	const TColor Fg    = ADark ? clWhite : clBlack;
+
+	// dark title bar of the tool window
+	if (HandleAllocated())
+	{
+		BOOL Dark = ADark ? TRUE : FALSE;
+		HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
+		if (hDwm)
+		{
+			typedef HRESULT (WINAPI *TFn)(HWND, DWORD, LPCVOID, DWORD);
+			TFn pSet = reinterpret_cast<TFn>(GetProcAddress(hDwm, "DwmSetWindowAttribute"));
+			if (pSet)
+				pSet(Handle, 20, &Dark, sizeof(Dark));		// DWMWA_USE_IMMERSIVE_DARK_MODE
+		}
+	}
+
+	StyleElements = TStyleElements();			// our colours, not the .vsf style
+	Color = Bg;
+	Font->Color = Fg;
+	FStrip->StyleElements = TStyleElements();
+	FStrip->Color = Strip;
+	for (int i = 0; i < 3; i++)
+	{
+		FPage[i]->StyleElements = TStyleElements();
+		FPage[i]->Color = Bg;
+		FTab[i]->StyleElements = TStyleElements();
+		FTab[i]->Font->Color = Fg;
+		FTab[i]->Transparent = false;
+	}
+	for (int i = 0; i < ComponentCount; i++)
+	{
+		TComponent *C = Components[i];
+		if (TCheckBox *Cb = dynamic_cast<TCheckBox*>(C))
+		{
+			Cb->StyleElements = TStyleElements();
+			Cb->Color = Bg;
+			Cb->Font->Color = Fg;
+		}
+		else if (TEdit *Ed = dynamic_cast<TEdit*>(C))
+		{
+			Ed->StyleElements = TStyleElements();
+			Ed->Color = Edit;
+			Ed->Font->Color = Fg;
+		}
+		else if (TLabel *Lb = dynamic_cast<TLabel*>(C))
+		{
+			Lb->StyleElements = TStyleElements();
+			Lb->Font->Color = Fg;
+		}
+		else if (TButton *Bt = dynamic_cast<TButton*>(C))
+		{
+			if (Bt->HandleAllocated() || Bt->Parent)
+				SetControlTheme(Bt, ADark);			// dark button
+		}
+	}
+	SelectPage(FPageIdx);
+	Invalidate();
+}
+//---------------------------------------------------------------------------
+static void ApplySnapFormTheme(TForm *F, bool ADark)
+{
+	static_cast<TSnapSettingsForm*>(F)->ApplyTheme(ADark);
 }
 //---------------------------------------------------------------------------
 TCheckBox* __fastcall TSnapSettingsForm::AddCheck(TWinControl *P, const String &Cap, int X, int Y, int W)
 {
+	// A themed native check box always draws its text in the system colour (black), so the box has no
+	// caption and a separate TLabel (white in the dark theme) carries the text.
 	TCheckBox *C = new TCheckBox(this);
 	C->Parent = P;
-	C->SetBounds(X, Y, W, 22);
-	C->Caption = Cap;
+	C->SetBounds(X, Y, 20, 22);
+	C->Caption = L"";
 	C->OnClick = ControlChanged;
+	TLabel *L = new TLabel(this);
+	L->Parent  = P;
+	L->Left    = X + 22;
+	L->Top     = Y + 3;
+	L->Caption = Cap;
+	L->Tag     = reinterpret_cast<NativeInt>(C);
+	L->OnClick = CheckLabelClick;
 	return C;
+}
+//---------------------------------------------------------------------------
+void __fastcall TSnapSettingsForm::CheckLabelClick(TObject *Sender)
+{
+	TCheckBox *C = reinterpret_cast<TCheckBox*>(static_cast<TLabel*>(Sender)->Tag);
+	if (C)
+	{
+		C->Checked = !C->Checked;
+		ControlChanged(C);		// (harmless if setting Checked already fired OnClick)
+	}
 }
 //---------------------------------------------------------------------------
 TEdit* __fastcall TSnapSettingsForm::AddEdit(TWinControl *P, const String &Cap, int Y)
@@ -2403,8 +4079,32 @@ void __fastcall TSnapSettingsForm::FormCloseEvent(TObject *Sender, TCloseAction 
 void __fastcall TForm1::SetViewMode(int AMode)
 {
 	FViewMode = AMode;			// 0 = 2D, 1 = 3D
-	// TODO: switch the viewport here, e.g.  FSdl->Mode = AMode;  (depends on TViewport3D)
+	// show the new view first, then hide the old one (no flash of the empty panel)
+	if (AMode == 0)
+	{
+		if (FSdl2) FSdl2->Visible = true;
+		if (FSdl)  FSdl->Visible  = false;
+	}
+	else
+	{
+		if (FSdl)  FSdl->Visible  = true;
+		if (FSdl2) FSdl2->Visible = false;
+	}
 	ToolBar3->Invalidate();
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::StartClick(TObject *Sender)
+{
+	// "Start": open (or bring to front) the render window; it evaluates the node graph of the 2D view every frame
+	if (FSdl2)
+		ShowStartWindow(this, FSdl2, false);
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::RunClick(TObject *Sender)
+{
+	// "Run": restart the animation from the beginning (opens the render window first if it is not open)
+	if (FSdl2)
+		ShowRunWindow(this, FSdl2, true);
 }
 //---------------------------------------------------------------------------
 void __fastcall TForm1::ModeButtonClick(TObject *Sender)
@@ -2455,7 +4155,25 @@ void __fastcall TForm1::SnapButtonClick(TObject *Sender)
 void __fastcall TForm1::SnapSettingsChanged(TObject *Sender)
 {
 	// the settings window changed something: refresh the button state
-	// TODO: pass FSnap to the viewport here, e.g.  FSdl->Snap = FSnap;
+	if (FSdl)
+	{
+		TViewport3D::TViewSnap V;
+		V.Enabled = FSnap.Enabled;   V.Grid = FSnap.Grid;       V.Vertex = FSnap.Vertex;
+		V.Edge = FSnap.Edge;         V.Midpoint = FSnap.Midpoint; V.Center = FSnap.Center;
+		V.BBox = FSnap.BBox;         V.ShowMarker = FSnap.ShowMarker;
+		V.Radius = FSnap.Radius;     V.MajorEvery = FSnap.MajorEvery;
+		V.AngleDeg = FSnap.AngleDeg; V.Percent = FSnap.Percent; V.GridSpacing = FSnap.GridSpacing;
+		FSdl->SetSnapSettings(V);
+	}
+	ToolBar4->Invalidate();
+}
+//---------------------------------------------------------------------------
+// The S key in the viewport switched snap on / off: the toolbar button and the settings window follow
+void __fastcall TForm1::ViewportSnapToggled(TObject *Sender)
+{
+	FSnap.Enabled = FSdl->SnapEnabled;
+	if (FSnapForm)
+		static_cast<TSnapSettingsForm*>(FSnapForm)->RefreshFromSettings();
 	ToolBar4->Invalidate();
 }
 //---------------------------------------------------------------------------
@@ -2475,6 +4193,7 @@ void __fastcall TForm1::ShowSnapSettings()
 	if (P.y + FSnapForm->Height > WA.Bottom) P.y = WA.Bottom - FSnapForm->Height;
 	FSnapForm->Left = P.x;
 	FSnapForm->Top  = P.y;
+	static_cast<TSnapSettingsForm*>(FSnapForm)->ApplyTheme(FDark);
 	FSnapForm->Show();
 }
 //---------------------------------------------------------------------------

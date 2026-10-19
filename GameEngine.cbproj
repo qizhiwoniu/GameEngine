@@ -87,7 +87,7 @@
         <ILINK_TranslatedLibraryPath>$(BDSLIB)\$(PLATFORM)\release\$(LANGDIR);$(ILINK_TranslatedLibraryPath)</ILINK_TranslatedLibraryPath>
         <ProjectType>CppVCLApplication</ProjectType>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;Vcl;Vcl.Imaging;Vcl.Touch;Vcl.Samples;Vcl.Shell;$(DCC_Namespace)</DCC_Namespace>
-        <AllPackageLibs>rtl.lib;vcl.lib;lmdrtdocking.lib;vclx.lib;lmdrtl.lib;xmlrtl.lib;vclwinx.lib;vclimg.lib;bindengine.lib;vclactnband.lib</AllPackageLibs>
+        <AllPackageLibs>rtl.lib;vcl.lib;vclx.lib;xmlrtl.lib;vclwinx.lib;vclimg.lib;bindengine.lib;vclactnband.lib;JvDocking.lib;Jcl.lib;JvCore.lib;dbrtl.lib;JclVcl.lib</AllPackageLibs>
         <_TCHARMapping>wchar_t</_TCHARMapping>
         <Multithreaded>true</Multithreaded>
         <Icon_MainIcon>$(BDS)\bin\cbuilder_PROJECTICON.ico</Icon_MainIcon>
@@ -123,7 +123,7 @@
         <BCC_PCHName_Clang>GameEnginePCH1.h</BCC_PCHName_Clang>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win64x)'!=''">
-        <PackageImports>adortl;bindcomp;bindcompdbx;bindcompfmx;bindcompvcl;bindcompvclsmp;bindcompvclwinx;bindengine;CloudService;CustomIPTransport;DataSnapClient;DataSnapCommon;DataSnapConnectors;DatasnapConnectorsFreePascal;DataSnapFireDAC;DataSnapIndy10ServerTransport;DataSnapNativeClient;DataSnapProviderClient;DataSnapServer;DataSnapServerMidas;dbexpress;dbrtl;dbxcds;DbxClientDriver;DbxCommonDriver;DBXDb2Driver;DBXFirebirdDriver;DBXInformixDriver;DBXInterBaseDriver;DBXMSSQLDriver;DBXMySQLDriver;DBXOdbcDriver;DBXOracleDriver;DBXSqliteDriver;DBXSybaseASADriver;DBXSybaseASEDriver;dsnap;dsnapcon;dsnapxml;emsclient;emsclientfiredac;emsedge;emshosting;emsserverresource;FireDAC;FireDACADSDriver;FireDACASADriver;FireDACCommon;FireDACCommonDriver;FireDACCommonODBC;FireDACDb2Driver;FireDACDBXDriver;FireDACDSDriver;FireDACIBDriver;FireDACInfxDriver;FireDACMongoDBDriver;FireDACMSAccDriver;FireDACMSSQLDriver;FireDACMySQLDriver;FireDACODBCDriver;FireDACOracleDriver;FireDACPgDriver;FireDACSqliteDriver;FireDACTDataDriver;fmx;fmxase;fmxdae;fmxFireDAC;fmxobj;IndyCore;IndyIPClient;IndyIPCommon;IndyIPServer;IndyProtocols;IndySystem;inet;inetdb;inetdbxpress;inetstn;lmdrtbar;lmdrtchart;lmdrtchartdb;lmdrtcore;lmdrtdesign;lmdrtdialog;lmdrtdocking;lmdrtelcore;lmdrteldb;lmdrtelpro;lmdrtfx;lmdrtgrid;lmdrtide;lmdrtinspector;lmdrtl;lmdrtplugin;lmdrtprint;lmdrtrtf;lmdrtrtfdb;lmdrtrtlx;lmdrtscript;lmdrtscriptimp;lmdrtsearch;lmdrtsearchdb;lmdrtshell;lmdrtspell;lmdrtstorage;lmdrtsyntax;lmdrtsys;lmdrttools;lmdrttoolsdb;lmdrtweb;ngcboxnet;ngcdropbox;ngcgoogle;ngcgoogle10svc;ngcgoogle11svc;ngcgoogle12svc;ngcgoogle13svc;ngcgoogle14svc;ngcgoogle15svc;ngcgoogle16svc;ngcgoogle17svc;ngcgoogle18svc;ngcgoogle19svc;ngcgoogle1svc;ngcgoogle2svc;ngcgoogle3svc;ngcgoogle4svc;ngcgoogle5svc;ngcgoogle6svc;ngcgoogle7svc;ngcgoogle8svc;ngcgoogle9svc;ngcommon;ngcruntime;ngcwrappers;ngdialogs;ngdragdrop;nghtml;ngvalidators;ngvldtctrls;RESTBackendComponents;RESTComponents;rtl;Skia;soapmidas;soaprtl;soapserver;tethering;vcl;vclactnband;vcldb;vcldsnap;vcledge;vclFireDAC;vclie;vclimg;VCLRESTComponents;VclSmp;vcltouch;vclwinx;vclx;xmlrtl;$(PackageImports)</PackageImports>
+        <PackageImports>adortl;bindcomp;bindcompdbx;bindcompfmx;bindcompvcl;bindcompvclsmp;bindcompvclwinx;bindengine;CloudService;CustomIPTransport;DataSnapClient;DataSnapCommon;DataSnapConnectors;DatasnapConnectorsFreePascal;DataSnapFireDAC;DataSnapIndy10ServerTransport;DataSnapNativeClient;DataSnapProviderClient;DataSnapServer;DataSnapServerMidas;dbexpress;dbrtl;dbxcds;DbxClientDriver;DbxCommonDriver;DBXDb2Driver;DBXFirebirdDriver;DBXInformixDriver;DBXInterBaseDriver;DBXMSSQLDriver;DBXMySQLDriver;DBXOdbcDriver;DBXOracleDriver;DBXSqliteDriver;DBXSybaseASADriver;DBXSybaseASEDriver;dsnap;dsnapcon;dsnapxml;emsclient;emsclientfiredac;emsedge;emshosting;emsserverresource;FireDAC;FireDACADSDriver;FireDACASADriver;FireDACCommon;FireDACCommonDriver;FireDACCommonODBC;FireDACDb2Driver;FireDACDBXDriver;FireDACDSDriver;FireDACIBDriver;FireDACInfxDriver;FireDACMongoDBDriver;FireDACMSAccDriver;FireDACMSSQLDriver;FireDACMySQLDriver;FireDACODBCDriver;FireDACOracleDriver;FireDACPgDriver;FireDACSqliteDriver;FireDACTDataDriver;fmx;fmxase;fmxdae;fmxFireDAC;fmxobj;IndyCore;IndyIPClient;IndyIPCommon;IndyIPServer;IndyProtocols;IndySystem;inet;inetdb;inetdbxpress;inetstn;RESTBackendComponents;RESTComponents;rtl;Skia;soapmidas;soaprtl;soapserver;tethering;vcl;vclactnband;vcldb;vcldsnap;vcledge;vclFireDAC;vclie;vclimg;VCLRESTComponents;VclSmp;vcltouch;vclwinx;vclx;xmlrtl;$(PackageImports)</PackageImports>
         <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;$(DCC_Namespace)</DCC_Namespace>
         <BT_BuildType>Debug</BT_BuildType>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
@@ -169,7 +169,6 @@
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_1_Win64x)'!=''">
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
-        <LinkPackageImports>rtl.bpi;vcl.bpi;lmdrtdocking.bpi;vclx.bpi;lmdrtl.bpi;xmlrtl.bpi;vclwinx.bpi;vclimg.bpi;bindengine.bpi;vclactnband.bpi</LinkPackageImports>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
         <VerInfo_Locale>1033</VerInfo_Locale>
         <IncludePath>D:\Embarcadero\Embarcadero\Studio\Projects\SDL3-3.4.18\x86_64-w64-mingw32\include;$(IncludePath)</IncludePath>
@@ -177,6 +176,7 @@
         <Icon_MainIcon>Image\icon.ico</Icon_MainIcon>
         <UWP_CppLogo44>Image\icon.ico</UWP_CppLogo44>
         <UWP_CppLogo150>Image\icon.ico</UWP_CppLogo150>
+        <LinkPackageImports>rtl.bpi;vcl.bpi;vclx.bpi;xmlrtl.bpi;vclwinx.bpi;vclimg.bpi;bindengine.bpi;vclactnband.bpi;JvDocking.bpi;Jcl.bpi;JvCore.bpi;dbrtl.bpi;JclVcl.bpi</LinkPackageImports>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2)'!=''">
         <Defines>NDEBUG;$(Defines)</Defines>
@@ -193,6 +193,34 @@
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
     </PropertyGroup>
     <ItemGroup>
+        <LibFiles Include="..\..\SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Condition="'$(Platform)'=='Win64x'">
+            <BuildOrder>6</BuildOrder>
+            <IgnorePath>true</IgnorePath>
+        </LibFiles>
+        <None Include="..\Core\SDLPanel.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>13</BuildOrder>
+        </None>
+        <None Include="Core\RunWindow.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>15</BuildOrder>
+        </None>
+        <None Include="Core\StartWindow.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>16</BuildOrder>
+        </None>
+        <None Include="Core\ViewHotkeys.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>14</BuildOrder>
+        </None>
+        <None Include="Core\Viewport2D.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>13</BuildOrder>
+        </None>
+        <None Include="Core\Viewport3D.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>13</BuildOrder>
+        </None>
         <CppCompile Include="Form\About.cpp">
             <VirtualFolder>{B3DCC26C-AC0B-4D79-922E-092C14D44E37}</VirtualFolder>
             <Form>Form3</Form>
@@ -214,19 +242,6 @@
             <DependentOn>Form\Unit1.h</DependentOn>
             <BuildOrder>12</BuildOrder>
         </CppCompile>
-        <None Include="README.MD"/>
-        <LibFiles Include="..\..\SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Condition="'$(Platform)'=='Win64x'">
-            <BuildOrder>6</BuildOrder>
-            <IgnorePath>true</IgnorePath>
-        </LibFiles>
-        <None Include="..\Core\SDLPanel.h">
-            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
-            <BuildOrder>13</BuildOrder>
-        </None>
-        <None Include="..\Core\Viewport3D.h">
-            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
-            <BuildOrder>14</BuildOrder>
-        </None>
         <CppCompile Include="GameEngine.cpp">
             <BuildOrder>0</BuildOrder>
         </CppCompile>
@@ -246,6 +261,7 @@
             <ResourceType>RCDATA</ResourceType>
             <ResourceId>PngImage_2</ResourceId>
         </RcItem>
+        <None Include="README.MD"/>
         <None Include="..\..\Win64x\Debug\SDL3.dll"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
@@ -336,12 +352,6 @@
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
-                <DeployFile LocalName="..\..\README.MD" Configuration="Debug" Class="ProjectFile">
-                    <Platform Name="Win64x">
-                        <RemoteDir>.\</RemoteDir>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
                 <DeployFile LocalName="..\..\SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Configuration="Debug" Class="ProjectFile">
                     <Platform Name="Win64x">
                         <RemoteDir>.\</RemoteDir>
@@ -379,6 +389,12 @@
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="Image\play96x96.png" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="README.MD" Configuration="Debug" Class="ProjectFile">
                     <Platform Name="Win64x">
                         <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
