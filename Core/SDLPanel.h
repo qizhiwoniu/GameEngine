@@ -18,6 +18,7 @@
 #include <Vcl.ExtCtrls.hpp>
 
 // A VCL program has its own WinMain: SDL must not replace it with SDL_main
+#pragma comment(lib, "SDL3")
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>

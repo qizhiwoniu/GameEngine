@@ -1,4 +1,4 @@
-//---------------------------------------------------------------------------
+﻿//---------------------------------------------------------------------------
 
 #ifndef Unit1H
 #define Unit1H
@@ -80,7 +80,6 @@ __published:    // IDE-managed Components
     TToolBar *tbrHelp;
     TTreeView *TreeView1;
     TControlBar *cbrTheme;
-    TToolBar *tbrTheme;
     TToolBar *ToolBar1;
     TToolButton *ToolButton1;
     TToolButton *ToolButton3;
@@ -91,7 +90,29 @@ __published:    // IDE-managed Components
 	TToolBar *ToolBar4;
 	TToolButton *ToolButton9;     // ToolBar3: 2D
 	TToolButton *ToolButton11;    // ToolBar3: 3D
-	TToolButton *ToolButton13;    // ToolBar4: snap toggle
+	TToolButton *ToolButton13;
+	TMenuItem *Player;
+	TMenuItem *RunProject;
+	TMenuItem *RunScene1;
+	TMenuItem *Restart1;
+	TMenuItem *Refresh1;
+	TMenuItem *ShutDown1;
+	TMenuItem *N10;
+	TMenuItem *N12;
+	TMenuItem *N13;
+	TMenuItem *N14;
+	TMenuItem *Undo1;
+	TMenuItem *Redo1;
+	TMenuItem *N15;
+	TMenuItem *N16;
+	TMenuItem *N17;
+	TMenuItem *N18;
+	TMenuItem *N2D1;
+	TMenuItem *N3D1;
+	TMenuItem *N19;
+	TMenuItem *N20;
+	TMenuItem *N21;
+	TMenuItem *develop1;    // ToolBar4: snap toggle
 	void __fastcall TitleBarPanel1CustomButtons0Paint(TObject *Sender);
     void __fastcall TitleBarPanel1CustomButtons1Paint(TObject *Sender);
     void __fastcall FormCreate(TObject *Sender);
@@ -99,7 +120,7 @@ __published:    // IDE-managed Components
     void __fastcall FormShow(TObject *Sender);
     void __fastcall TitleBarPanel1Paint(TObject *Sender, TCanvas *Canvas, TRect &ARect);
     void __fastcall N9Click(TObject *Sender);
-    void __fastcall AboutClick(TObject *Sender);
+	void __fastcall AboutClick(TObject *Sender);
 private:
     bool FDark;        // true = dark theme active
     void __fastcall AlignHelpToolBar();
@@ -113,6 +134,7 @@ private:
     TForm *FExploreForm;				// holds TreeView1
     TForm *FCreateForm;					// "Create" (empty for now)
     TForm *FPropsForm;					// holds the property list FProps
+    TForm *FAnimForm;					// "动画": time slider, ruler, layer list with show / freeze / lock icons
     TForm *FOutputForm;					// "命令": output history (top) + command input line (bottom)
 	bool   FDockLaidOut;				// the start layout is built once, in FormShow
 	bool   FLayoutLocked;				// "锁定布局": dock windows can not be moved / closed
@@ -173,8 +195,7 @@ private:
         TCustomDrawState State, TCustomDrawStage Stage, TTBCustomDrawFlags &Flags, bool &DefaultDraw);
     // ---- theme colour bar (row of colour swatches below the menu bar) ----
     void __fastcall InitThemeBar();
-    void __fastcall LayoutThemeBar();
-    void __fastcall ThemeSwatchClick(TObject *Sender);
+	void __fastcall ThemeSwatchClick(TObject *Sender);
  	void __fastcall ThemeBarGetSiteInfo(TObject *Sender, TControl *DockClient,
 	TRect &InfluenceRect, const TPoint &MousePos, bool &CanDock);
     void __fastcall ThemeBarBandInfo(TObject *Sender, TControl *Control, TRect &Insets,

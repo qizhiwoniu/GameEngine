@@ -2207,6 +2207,41 @@ public:
 		return (I >= 0 && I < (int)FObjs.size()) ? &FObjs[I] : NULL;
 	}
 
+	// ---- undo / redo (Form1) ----
+	void __fastcall GetObjects(std::vector<TSceneObj> &Out) const { Out = FObjs; }
+
+	// Replace the whole scene. Uids are kept (the 2D nodes refer to them); the selection stays on the objects that still exist.
+	// false = an object is being dragged right now, nothing was changed.
+	bool __fastcall ReplaceObjects(const std::vector<TSceneObj> &Objs)
+	{
+		if (FTransformDragging) return false;
+		std::vector<int> SelUids;
+		GetSelectedUids(SelUids);
+		FObjs = Objs;
+		for (size_t i = 0; i < FObjs.size(); ++i)
+			if (FObjs[i].Uid >= FNextUid) FNextUid = FObjs[i].Uid + 1;		// a uid that was used is never handed out again
+		std::vector<int> Sel;
+		for (size_t i = 0; i < SelUids.size(); ++i)
+		{
+			int Idx = IndexOfUid(SelUids[i]);
+			if (Idx >= 0) Sel.push_back(Idx);
+		}
+		FSelectedObjs = Sel;
+		FSelected = Sel.empty() ? -1 : Sel.back();
+		if (FOnSelect) FOnSelect(this);
+		return true;
+	}
+
+	// 8 corners of a box (same order as the Obj export: bit 0 = +X, bit 1 = +Y, bit 2 = +Z of the local half size)
+	static void __fastcall ObjectCorners(const TSceneObj &O, Vec3 *P8)
+	{
+		for (int i = 0; i < 8; ++i)
+		{
+			Vec3 L = V3((i & 1) ? O.Half.x : -O.Half.x, (i & 2) ? O.Half.y : -O.Half.y, (i & 4) ? O.Half.z : -O.Half.z);
+			P8[i] = O.Pos + RotateVector(L, O.Rot);
+		}
+	}
+
 	// ---- snap settings (the toolbar button / "Grid and Snap Settings" window of Form1 own them) ----
 	struct TViewSnap
 	{

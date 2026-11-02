@@ -1,4 +1,4 @@
-//---------------------------------------------------------------------------
+﻿//---------------------------------------------------------------------------
 
 #include <vcl.h>
 #pragma hdrstop
@@ -20,11 +20,13 @@
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <map>
 //---------------------------------------------------------------------------
 #pragma package(smart_init)
 #pragma link "JvDockControlForm"
 #pragma link "JvDockVSNetStyle"
 #pragma resource "*.dfm"
+
 TForm1 *Form1;
 
 
@@ -87,6 +89,9 @@ struct TDarkDialogScope
 	HHOOK FHook;
 };
 //---------------------------------------------------------------------------
+// Animation of the "动画" window (defined below, after the timeline class): saved in the .yu file as extra records.
+static void AnimCollectLines(std::vector<String> &Out);
+static void AnimRestoreLines(const std::vector<String> &In);
 // ".yu" project file: New / Open / Save / Save as for the node graph (and with it the 3D objects, see SceneLink.h).
 // Self-contained helper: Unit1.h does not need to change. Created in the form constructor, wired to
 // ToolButton1 (New), ToolButton3 (Open), ToolButton5 (Save).
@@ -97,6 +102,7 @@ private:
 	TViewport2D  *FGraph;
 	String        FPath;			// "" = not saved yet
 	bool          FDarkTheme;		// dark theme active: the file dialogs are darkened
+	TViewport3D  *FView;			// the 3D scene (Export)
 	static void AddYuFileType(TFileTypeItems *Types)
 	{
 		TFileTypeItem *T = Types->Add();
@@ -117,6 +123,7 @@ private:
 	bool WriteTo(const String &Path)
 	{
 		String Err;
+		AnimCollectLines(FGraph->ExtraLines);		// the key frames go into the file with the node graph
 		if (!FGraph->SaveToFile(Path, Err))
 		{
 			MessageDlg(L"保存失败：\n" + Err, mtError, TMsgDlgButtons() << mbOK, 0);
@@ -138,9 +145,12 @@ private:
 	}
 
 public:
-	__fastcall TProjectFile(TForm *Form, TViewport2D *Graph) : FForm(Form), FGraph(Graph), FDarkTheme(true) { UpdateCaption(); }
+	TNotifyEvent  OnProjectReplaced;	// New / Open: the whole project was replaced (the undo history starts again)
+
+	__fastcall TProjectFile(TForm *Form, TViewport2D *Graph) : FForm(Form), FGraph(Graph), FDarkTheme(true), FView(NULL), OnProjectReplaced(NULL) { UpdateCaption(); }
 
 	void SetDark(bool ADark) { FDarkTheme = ADark; }
+	void SetView3D(TViewport3D *V) { FView = V; }
 
 	// SaveAs = true always asks for a file name
 	bool DoSave(bool SaveAs)
@@ -168,6 +178,8 @@ public:
 		}
 		FPath = Path;
 		UpdateCaption();
+		AnimRestoreLines(FGraph->ExtraLines);		// key frames of the file (none for files of older versions)
+		if (OnProjectReplaced) OnProjectReplaced(this);
 		if (!Err.IsEmpty())			// opened, but something was skipped
 			MessageDlg(Err, mtWarning, TMsgDlgButtons() << mbOK, 0);
 	}
@@ -176,8 +188,146 @@ public:
 	{
 		if (!ConfirmDiscard()) return;
 		FGraph->ClearGraph();		// SceneLink removes the matching 3D objects within 100 ms
+		AnimRestoreLines(std::vector<String>());		// no animation either
 		FPath = L"";
 		UpdateCaption();
+		if (OnProjectReplaced) OnProjectReplaced(this);
+	}
+
+	// ---- 导入: the nodes of another .yu file are added to the project (their 3D objects are created by SceneLink) ----
+	void __fastcall ImportFile(TObject *Sender)
+	{
+		std::unique_ptr<TFileOpenDialog> D(new TFileOpenDialog(FForm));
+		D->Title            = L"导入";
+		D->DefaultExtension = L"yu";
+		AddYuFileType(D->FileTypes);
+		D->Options          = D->Options << fdoFileMustExist << fdoPathMustExist;
+		bool Ok;
+		{
+			TDarkDialogScope Dark(FDarkTheme);
+			Ok = D->Execute();
+		}
+		if (!Ok) return;
+		String Err;
+		std::vector<String> Anim;
+		int Added = 0;
+		if (!FGraph->ImportFromFile(D->FileName, Err, &Anim, &Added))
+		{
+			MessageDlg(L"导入失败：\n" + Err, mtError, TMsgDlgButtons() << mbOK, 0);
+			return;
+		}
+		if (!Anim.empty())			// key frames of the imported nodes join the ones of the project
+		{
+			std::vector<String> All;
+			AnimCollectLines(All);
+			All.insert(All.end(), Anim.begin(), Anim.end());
+			AnimRestoreLines(All);
+		}
+		if (!Err.IsEmpty())
+			MessageDlg(Err, mtWarning, TMsgDlgButtons() << mbOK, 0);
+	}
+
+	// ---- 导出: the 3D scene as a Wavefront .obj (+ a .mtl next to it for the colours) ----
+	// Every object is a box: 8 corners, 6 quads with their own normals (flat shading). The coordinates are those of the
+	// editor (Z up, same units); in 3ds Max / Blender import with "Z up" (or rotate -90 deg around X).
+	static String ObjNum(float V)
+	{
+		TFormatSettings FS = TFormatSettings::Create(L"en-US");		// always '.', whatever the Windows region is
+		return FloatToStrF(static_cast<long double>(V), ffGeneral, 9, 0, FS);
+	}
+	static String ObjSafeName(const String &S, int Index)
+	{
+		String R;
+		for (int i = 1; i <= S.Length(); i++)
+		{
+			wchar_t ch = S[i];
+			R += (ch <= L' ' || ch == L'#') ? L'_' : ch;
+		}
+		return R.IsEmpty() ? (L"Object" + IntToStr(Index + 1)) : R;
+	}
+	static void WriteUtf8(const String &Path, const String &Text)		// UTF-8 without BOM: every OBJ reader accepts it
+	{
+		std::unique_ptr<TFileStream> FS(new TFileStream(Path, fmCreate));
+		TBytes B = TEncoding::UTF8->GetBytes(Text);
+		if (B.Length > 0)
+			FS->WriteBuffer(&B[0], B.Length);
+	}
+	bool WriteObj(const String &Path, String &Err)
+	{
+		try
+		{
+			std::vector<TSceneObj> Objs;
+			FView->GetObjects(Objs);
+			// corner i: bit 0 = +X, bit 1 = +Y, bit 2 = +Z (TViewport3D::ObjectCorners); quads are counter-clockwise seen from outside
+			static const int Face[6][4] = { {0, 2, 3, 1}, {4, 5, 7, 6}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 4, 6, 2}, {1, 3, 7, 5} };
+			String Obj = L"# 3DGameEngine scene, " + IntToStr(static_cast<int>(Objs.size())) + L" objects, Z up\n";
+			Obj += L"mtllib " + ChangeFileExt(ExtractFileName(Path), L".mtl") + L"\n";
+			String Mtl = L"# 3DGameEngine materials\n";
+			for (size_t o = 0; o < Objs.size(); o++)
+			{
+				const TSceneObj &O = Objs[o];
+				Vec3 P[8];
+				TViewport3D::ObjectCorners(O, P);
+				const String Mat = L"mat" + IntToStr(static_cast<int>(o) + 1);
+				Mtl += L"newmtl " + Mat + L"\nKd " + ObjNum(O.R / 255.0f) + L" " + ObjNum(O.G / 255.0f) + L" " + ObjNum(O.B / 255.0f) + L"\nKa 0 0 0\nd 1\n\n";
+				Obj += L"o " + ObjSafeName(O.Name, static_cast<int>(o)) + L"\nusemtl " + Mat + L"\n";
+				for (int i = 0; i < 8; i++)
+					Obj += L"v " + ObjNum(P[i].x) + L" " + ObjNum(P[i].y) + L" " + ObjNum(P[i].z) + L"\n";
+				for (int f = 0; f < 6; f++)
+				{
+					const Vec3 &A = P[Face[f][0]], &B = P[Face[f][1]], &C = P[Face[f][2]];
+					const float ux = B.x - A.x, uy = B.y - A.y, uz = B.z - A.z;
+					const float vx = C.x - B.x, vy = C.y - B.y, vz = C.z - B.z;
+					float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+					const float Len = sqrtf(nx * nx + ny * ny + nz * nz);
+					if (Len > 1e-12f) { nx /= Len; ny /= Len; nz /= Len; }
+					else              { nx = 0.0f; ny = 0.0f; nz = 1.0f; }		// flat box: the normal does not matter
+					Obj += L"vn " + ObjNum(nx) + L" " + ObjNum(ny) + L" " + ObjNum(nz) + L"\n";
+				}
+				const int vb = static_cast<int>(o) * 8 + 1, nb = static_cast<int>(o) * 6 + 1;		// OBJ indexes start at 1
+				for (int f = 0; f < 6; f++)
+				{
+					Obj += L"f";
+					for (int k = 0; k < 4; k++)
+						Obj += L" " + IntToStr(vb + Face[f][k]) + L"//" + IntToStr(nb + f);
+					Obj += L"\n";
+				}
+			}
+			WriteUtf8(Path, Obj);
+			WriteUtf8(ChangeFileExt(Path, L".mtl"), Mtl);
+			return true;
+		}
+		catch (Exception &E)
+		{
+			Err = E.Message;
+			return false;
+		}
+	}
+	void __fastcall ExportFile(TObject *Sender)
+	{
+		if (!FView || FView->ObjectCount() == 0)
+		{
+			MessageDlg(L"场景里没有可以导出的物体。", mtInformation, TMsgDlgButtons() << mbOK, 0);
+			return;
+		}
+		std::unique_ptr<TFileSaveDialog> D(new TFileSaveDialog(FForm));
+		D->Title            = L"导出";
+		D->DefaultExtension = L"obj";
+		TFileTypeItem *T = D->FileTypes->Add();
+		T->DisplayName = L"Wavefront OBJ (*.obj)";
+		T->FileMask    = L"*.obj";
+		D->Options          = D->Options << fdoOverWritePrompt << fdoPathMustExist;
+		D->FileName         = (FPath.IsEmpty() ? String(L"scene") : ChangeFileExt(ExtractFileName(FPath), L"")) + L".obj";
+		if (!FPath.IsEmpty()) D->DefaultFolder = ExtractFilePath(FPath);
+		bool Ok;
+		{
+			TDarkDialogScope Dark(FDarkTheme);
+			Ok = D->Execute();
+		}
+		if (!Ok) return;
+		String Err;
+		if (!WriteObj(D->FileName, Err))
+			MessageDlg(L"导出失败：\n" + Err, mtError, TMsgDlgButtons() << mbOK, 0);
 	}
 
 	void __fastcall OpenFile(TObject *Sender)
@@ -263,7 +413,7 @@ static TLabel *g_CommandPrompt = NULL;
 static bool g_CommandDark = true;
 static void ApplyCommandLineTheme(bool ADark);	// defined after SetControlTheme
 static bool DockFormReallyShown(TForm *F);		// defined with the View menu code
-static TMenuItem *g_DockMenuItems[4] = { NULL, NULL, NULL, NULL };	// View menu entries of the 4 dock windows (identified by pointer, not by caption)
+static TMenuItem *g_DockMenuItems[5] = { NULL, NULL, NULL, NULL, NULL };	// View menu entries of the 4 dock windows (identified by pointer, not by caption)
 static void ApplySnapFormTheme(TForm *F, bool ADark);	// defined after TSnapSettingsForm
 
 class TCommandHandler : public TObject
@@ -421,7 +571,7 @@ static const TThemePreset THEME_PRESETS[] =
 	{ L"\u7EA2\u8272", RGB(210, 60, 60),   RGB(56, 26, 26), RGB(250, 226, 226) }	// red
 };
 static const int THEME_PRESET_COUNT = sizeof(THEME_PRESETS) / sizeof(THEME_PRESETS[0]);
-static const int THEME_SWATCH_BTN_W = 28;		// width of one swatch button (= tbrTheme->ButtonWidth)
+static const int THEME_SWATCH_BTN_W = 28;		// width of one swatch button
 static int g_ThemeIndex = 0;					// selected preset
 static void ApplyCreateDockControlsTheme(bool ADark);
 
@@ -457,6 +607,20 @@ static TMenuPalette GetMenuPalette(bool ADark)
 	P.Sep      = MixColor(P.Bg, ADark ? clWhite : clBlack, 24);
 	P.Shortcut = ADark ? Rgb(205, 205, 205) : Rgb(90, 90, 90);
 	return P;
+}
+//---------------------------------------------------------------------------
+// Shortcut text shown at the right of a menu item.
+// * Items with a real TMenuItem::ShortCut show that (and the VCL really triggers them).
+// * Items in g_MenuShortcutText are "display only": the key is NOT registered as a menu shortcut, because it would
+//   swallow the key before the focused control sees it (Ctrl+C / Ctrl+V / Delete / F5 are used by the file tree,
+//   the viewport and the edit boxes). The text is just drawn in the menu.
+static std::map<TMenuItem*, String> g_MenuShortcutText;
+static String MenuShortcutText(TMenuItem *Item)
+{
+	if (Item->ShortCut != 0)
+		return ShortCutToText(Item->ShortCut);
+	std::map<TMenuItem*, String>::const_iterator It = g_MenuShortcutText.find(Item);
+	return It != g_MenuShortcutText.end() ? It->second : String();
 }
 //---------------------------------------------------------------------------
 // Ask Windows to draw its own menu chrome (the border around popup menus) in dark/light.
@@ -1035,8 +1199,1499 @@ public:
 };
 //---------------------------------------------------------------------------
 //---------------------------------------------------------------------------
+// "动画" dock window: transport buttons, time slider, frame ruler and a layer list, connected to the 3D scene.
+//
+// Layers
+//   * one layer per Box / Plane of the scene (created / removed automatically). A layer belongs to the NODE of the object
+//     (the node id is what the .yu file keeps), so renaming an object or opening a file does not lose the animation.
+//     A layer whose object was deleted but still has key frames stays as a dimmed "(缺失)" row.
+//   * icons of a layer:  eye = play this layer (off: the layer is muted),
+//                        snowflake = frozen: the layer is neither played nor recorded, the object stays where it is,
+//                        padlock = locked: key frames are protected (no recording, no add / delete), still played.
+// Key frames
+//   * a key stores the full transform of the object: position XYZ, rotation XYZ and size XYZ (Length / Width / Height;
+//     the viewport has no separate scale, "scale" = the size of the box). Between two keys the values are
+//     interpolated linearly (rotation per axis in radians, so 0 -> 360 deg is one full turn); before the first / after
+//     the last key the value is held.
+//   * record button (red dot): auto key. While it is on, every change of an object (gizmo, property panel) writes a key at the
+//     current frame. The first change of an object without keys also writes a key at the first frame with the old pose.
+//   * diamond button: write a key of the selected layer at the current frame from the current pose of its object.
+//   * double click in a track: add a key at that frame (value = what the animation has there) / remove the key.
+//   * Delete: remove the key at the current frame of the selected layer (a missing layer: remove the layer).
+//     Shift+Delete: remove all keys of the selected layer.
+// Playing
+//   * the play head drives the objects: dragging the slider / ruler or playing writes the interpolated transform into the
+//     objects of every layer that has keys. Playback uses the real time (30 fps), frames are skipped if the PC is slow.
+// Saved in the .yu file: records "anim" / "alayer" / "akey" (see TViewport2D::ExtraLines), restored when the file is opened.
+// Everything is drawn with the canvas (no image files).
+static void PolyN(TCanvas *C, const TPoint *P, int N)
+{
+	C->Polygon(P, N - 1);		// VCL: the second parameter is the index of the last point
+}
+struct TAnimPose
+{
+	float P[3];		// position
+	float R[3];		// rotation, radians (as stored in the object)
+	float S[3];		// size = 2 * Half
+};
+struct TAnimKey
+{
+	int       Frame;
+	TAnimPose V;
+};
+static String AnimNum(float V)
+{
+	return FloatToStrF(static_cast<double>(V), ffFixed, 7, 2);
+}
+// number <-> text of the .yu file: always '.', whatever the Windows region is (same as TViewport2D)
+static String AnimFileNum(float V)
+{
+	TFormatSettings FS = TFormatSettings::Create(L"en-US");
+	return FloatToStrF(static_cast<long double>(V), ffGeneral, 9, 0, FS);
+}
+static float AnimFileNumIn(const String &S, float Def)
+{
+	TFormatSettings FS = TFormatSettings::Create(L"en-US");
+	return static_cast<float>(StrToFloatDef(S.Trim(), static_cast<long double>(Def), FS));
+}
+static void AnimSplitTab(const String &Line, std::vector<String> &F)
+{
+	F.clear();
+	int Start = 1;
+	for (int i = 1; i <= Line.Length(); i++)
+	{
+		if (Line[i] == L'\t')
+		{
+			F.push_back(Line.SubString(Start, i - Start));
+			Start = i + 1;
+		}
+	}
+	F.push_back(Line.SubString(Start, Line.Length() - Start + 1));
+}
+class TAnimTimeline : public TCustomControl
+{
+private:
+	struct TLayerRow
+	{
+		int    NodeId;				// node of the 2D graph = identity of the layer (this is what the .yu file keeps)
+		String Name;				// name of the node / object
+		TColor Tint;
+		bool   Visible, Frozen, Locked;
+		bool   NodeAlive;			// the node exists (false: it was deleted, the row is shown as "(缺失)")
+		int    ObjIndex, ObjUid;	// 3D object of the node (valid for this sync pass); -1 / 0 = not created yet (a file was just opened)
+		bool   HasLast;
+		TAnimPose Last;				// pose seen / applied last: a difference to the object = the user changed it
+		std::vector<TAnimKey> Keys;	// sorted by frame, one key per frame
+	};
+	enum { ToolH = 30, SliderH = 28, RulerH = 22, RowH = 24, NameW = 200, RightPad = 16,
+		   RowsTop = ToolH + SliderH + RulerH, BtnCount = 8 };
+	std::vector<TLayerRow> FLayers;
+	int     FStart, FEnd, FFps, FFrame, FSel, FDrag;		// FDrag: 0 none, 1 ruler / track, 2 slider thumb
+	int     FTopRow, FLastSel, FTick, FHotBtn;
+	bool    FPlaying, FLoop, FDark, FRecord;
+	DWORD   FPlayT0, FLastNotify, FLastApplyTick;
+	int     FPlayF0;
+	TTimer *FTimer;
+	TViewport3D *FView;
+	TViewport2D *FGraph;			// the node graph: node id <-> 3D object
+	bool    FPendingApply;			// a file was opened: write the animation into the objects as soon as they exist
+	int     FPendingTicks;
+
+	int TrackL() { return NameW + 14; }
+	int TrackR() { int R = ClientWidth - RightPad; return R < TrackL() + 10 ? TrackL() + 10 : R; }
+	int FrameToX(int F)
+	{
+		return TrackL() + static_cast<int>(static_cast<double>(F - FStart) * (TrackR() - TrackL()) / (FEnd - FStart));
+	}
+	int XToFrame(int X)
+	{
+		if (X < TrackL()) X = TrackL();
+		if (X > TrackR()) X = TrackR();
+		double T = static_cast<double>(X - TrackL()) / (TrackR() - TrackL());
+		return FStart + static_cast<int>(T * (FEnd - FStart) + 0.5);
+	}
+	TRect BtnRect(int I) { return TRect(8 + I * 30, 4, 8 + I * 30 + 28, ToolH - 4); }
+	TRect IconRect(int Col, int Row)
+	{
+		int cx = 18 + Col * 24, cy = RowsTop + (Row - FTopRow) * RowH + RowH / 2;
+		return TRect(cx - 11, cy - 11, cx + 12, cy + 12);
+	}
+	void Ln(int x1, int y1, int x2, int y2) { Canvas->MoveTo(x1, y1); Canvas->LineTo(x2, y2); }
+
+	// ---- scrolling of the layer list ----
+	int VisibleRows() { int N = (ClientHeight - RowsTop) / RowH; return N < 1 ? 1 : N; }
+	void ClampScroll()
+	{
+		int Max = static_cast<int>(FLayers.size()) - VisibleRows();
+		if (Max < 0) Max = 0;
+		if (FTopRow > Max) FTopRow = Max;
+		if (FTopRow < 0)   FTopRow = 0;
+	}
+	void EnsureVisible(int Row)
+	{
+		if (Row < FTopRow)
+			FTopRow = Row;
+		else if (Row >= FTopRow + VisibleRows())
+			FTopRow = Row - VisibleRows() + 1;
+		ClampScroll();
+	}
+
+	// ---- poses ----
+	static float Ab(float V) { return V < 0 ? -V : V; }
+	static bool PoseDiffers(const TAnimPose &A, const TAnimPose &B)
+	{
+		for (int i = 0; i < 3; i++)
+			if (Ab(A.P[i] - B.P[i]) > 1e-4f || Ab(A.R[i] - B.R[i]) > 1e-4f || Ab(A.S[i] - B.S[i]) > 1e-4f)
+				return true;
+		return false;
+	}
+	static TAnimPose Lerp(const TAnimPose &A, const TAnimPose &B, float T)
+	{
+		TAnimPose Q;
+		for (int i = 0; i < 3; i++)
+		{
+			Q.P[i] = A.P[i] + (B.P[i] - A.P[i]) * T;
+			Q.R[i] = A.R[i] + (B.R[i] - A.R[i]) * T;
+			Q.S[i] = A.S[i] + (B.S[i] - A.S[i]) * T;
+		}
+		return Q;
+	}
+	bool ReadPose(int I, TAnimPose &Z)
+	{
+		if (!FView || I < 0 || I >= FView->ObjectCount())
+			return false;
+		const TSceneObj &O = FView->Obj(I);
+		Z.P[0] = O.Pos.x;  Z.P[1] = O.Pos.y;  Z.P[2] = O.Pos.z;
+		Z.R[0] = O.Rot.x;  Z.R[1] = O.Rot.y;  Z.R[2] = O.Rot.z;
+		Z.S[0] = O.Half.x * 2.0f;  Z.S[1] = O.Half.y * 2.0f;  Z.S[2] = O.Half.z * 2.0f;
+		return true;
+	}
+	void WritePose(int I, const TAnimPose &Z)
+	{
+		if (!FView)
+			return;
+		TSceneObj *O = FView->MutableObj(I);
+		if (!O)
+			return;
+		O->Pos.x = Z.P[0];  O->Pos.y = Z.P[1];  O->Pos.z = Z.P[2];
+		O->Rot.x = Z.R[0];  O->Rot.y = Z.R[1];  O->Rot.z = Z.R[2];
+		O->Half.x = (Z.S[0] * 0.5f > 0.0005f) ? Z.S[0] * 0.5f : 0.0005f;
+		O->Half.y = (Z.S[1] * 0.5f > 0.0005f) ? Z.S[1] * 0.5f : 0.0005f;
+		O->Half.z = (Z.S[2] * 0.5f > 0.0005f) ? Z.S[2] * 0.5f : 0.0005f;
+	}
+	// index of the object of this layer in the viewport, -1 if there is none (the uid is checked: indexes shift on delete)
+	int Bound(const TLayerRow &L)
+	{
+		if (!FView)
+			return -1;
+		int I = L.ObjIndex;
+		if (I < 0 || I >= FView->ObjectCount())
+			return -1;
+		return (FView->Obj(I).Uid == L.ObjUid) ? I : -1;
+	}
+
+	// ---- key frames ----
+	int FindKey(const TLayerRow &L, int F)
+	{
+		for (size_t k = 0; k < L.Keys.size(); k++)
+			if (L.Keys[k].Frame == F)
+				return static_cast<int>(k);
+		return -1;
+	}
+	void SetKey(TLayerRow &L, int F, const TAnimPose &Z)
+	{
+		TAnimKey K;
+		K.Frame = F;
+		K.V = Z;
+		int At = FindKey(L, F);
+		if (At >= 0)
+		{
+			L.Keys[At] = K;
+			return;
+		}
+		size_t Pos = 0;
+		while (Pos < L.Keys.size() && L.Keys[Pos].Frame < F)
+			Pos++;
+		L.Keys.insert(L.Keys.begin() + Pos, K);
+	}
+	bool EvalLayer(const TLayerRow &L, int F, TAnimPose &Out)		// false = layer has no keys
+	{
+		const std::vector<TAnimKey> &K = L.Keys;
+		if (K.empty())
+			return false;
+		if (F <= K.front().Frame) { Out = K.front().V; return true; }
+		if (F >= K.back().Frame)  { Out = K.back().V;  return true; }
+		for (size_t i = 1; i < K.size(); i++)
+		{
+			if (F <= K[i].Frame)
+			{
+				const TAnimKey &A = K[i - 1];
+				const TAnimKey &B = K[i];
+				float T = static_cast<float>(F - A.Frame) / static_cast<float>(B.Frame - A.Frame);
+				Out = Lerp(A.V, B.V, T);
+				return true;
+			}
+		}
+		Out = K.back().V;
+		return true;
+	}
+	void ToggleKeyAt(TLayerRow &L, int F)
+	{
+		if (L.Frozen || L.Locked)
+			return;
+		int At = FindKey(L, F);
+		if (At >= 0)
+		{
+			L.Keys.erase(L.Keys.begin() + At);
+			return;
+		}
+		TAnimPose Z;
+		if (!EvalLayer(L, F, Z))
+		{
+			int I = Bound(L);
+			if (I < 0 || !ReadPose(I, Z))
+				return;
+		}
+		SetKey(L, F, Z);
+	}
+	void KeyFromObject(TLayerRow &L)			// diamond button: key at the current frame from the object's current pose
+	{
+		if (L.Frozen || L.Locked)
+			return;
+		int I = Bound(L);
+		TAnimPose Z;
+		if (I < 0 || !ReadPose(I, Z))
+			return;
+		SetKey(L, FFrame, Z);
+		L.Last = Z;
+		L.HasLast = true;
+	}
+
+	// ---- animation -> objects ----
+	void ApplyAt(int F, bool Notify)
+	{
+		if (!FView)
+			return;
+		bool Any = false;
+		for (size_t j = 0; j < FLayers.size(); j++)
+		{
+			TLayerRow &L = FLayers[j];
+			if (!L.Visible || L.Frozen)
+				continue;
+			int I = Bound(L);
+			TAnimPose Z;
+			if (I < 0 || !EvalLayer(L, F, Z))
+				continue;
+			WritePose(I, Z);
+			ReadPose(I, L.Last);		// read back: the object may have clamped a value
+			L.HasLast = true;
+			Any = true;
+		}
+		if (Any)
+		{
+			FLastApplyTick = GetTickCount();
+			FView->Invalidate();
+			if (Notify && OnApplied)
+			{
+				FLastNotify = GetTickCount();
+				OnApplied(this);
+			}
+		}
+	}
+	void __fastcall SetFrame(int F)
+	{
+		if (F < FStart) F = FStart;
+		if (F > FEnd)   F = FEnd;
+		FFrame = F;
+		if (FPlaying)
+		{
+			FPlayT0 = GetTickCount();
+			FPlayF0 = F;
+		}
+		ApplyAt(F, true);
+		Invalidate();
+	}
+	void __fastcall SetPlaying(bool P)
+	{
+		if (P && FFrame >= FEnd)
+		{
+			FFrame = FStart;
+			ApplyAt(FFrame, true);
+		}
+		FPlaying = P;
+		if (P)
+		{
+			FPlayT0 = GetTickCount();
+			FPlayF0 = FFrame;
+		}
+		Invalidate();
+	}
+	void AdvancePlay()
+	{
+		double El = static_cast<double>(static_cast<DWORD>(GetTickCount() - FPlayT0)) * FFps / 1000.0;
+		int Total = (FPlayF0 - FStart) + static_cast<int>(El);
+		int Span  = FEnd - FStart;
+		int F = FFrame;
+		bool Stop = false;
+		if (Total > Span)
+		{
+			if (FLoop)
+				F = FStart + Total % (Span + 1);
+			else
+			{
+				F = FEnd;
+				Stop = true;
+			}
+		}
+		else
+			F = FStart + Total;
+		if (F != FFrame)
+		{
+			FFrame = F;
+			ApplyAt(F, static_cast<DWORD>(GetTickCount() - FLastNotify) >= 100);		// property panel: at most 10 x per second
+			Invalidate();
+		}
+		if (Stop)
+			SetPlaying(false);
+	}
+
+	// ---- nodes / objects -> layers ----
+	static bool RowLess(const TLayerRow &A, const TLayerRow &B) { return A.NodeId < B.NodeId; }
+	TLayerRow MakeRow(int NodeId)
+	{
+		TLayerRow L;
+		L.NodeId = NodeId;
+		L.Tint = Rgb(150, 150, 150);
+		L.Visible = true;  L.Frozen = false;  L.Locked = false;
+		L.NodeAlive = false;
+		L.ObjIndex = -1;  L.ObjUid = 0;
+		L.HasLast = false;
+		return L;
+	}
+	int FindLayerByNode(int NodeId)
+	{
+		for (size_t j = 0; j < FLayers.size(); j++)
+			if (FLayers[j].NodeId == NodeId)
+				return static_cast<int>(j);
+		return -1;
+	}
+	// Every Box / Plane node of the graph has a layer. The node id stays the same when a file is saved and opened again,
+	// the 3D object (uid) is created again by SceneLink then: the layer finds it through its node.
+	void SyncLayers()
+	{
+		if (!FView || !FGraph)
+			return;
+		std::vector<TViewport2D::TLinkInfo> Nodes;
+		FGraph->GetLinkNodes(Nodes);
+		const int SelId = (FSel >= 0 && FSel < static_cast<int>(FLayers.size())) ? FLayers[FSel].NodeId : -1;
+		// 1) existing layers: node -> object
+		for (size_t j = 0; j < FLayers.size(); j++)
+		{
+			TLayerRow &L = FLayers[j];
+			L.NodeAlive = false;  L.ObjIndex = -1;  L.ObjUid = 0;
+			for (size_t n = 0; n < Nodes.size(); n++)
+			{
+				if (Nodes[n].Id != L.NodeId)
+					continue;
+				L.NodeAlive = true;
+				L.Name = Nodes[n].Name;
+				if (Nodes[n].Obj != 0)
+				{
+					int OI = FView->IndexOfUid(Nodes[n].Obj);
+					if (OI >= 0)
+					{
+						L.ObjIndex = OI;
+						L.ObjUid = Nodes[n].Obj;
+						const TSceneObj &O = FView->Obj(OI);
+						L.Tint = Rgb(O.R, O.G, O.B);
+					}
+				}
+				break;
+			}
+		}
+		// 2) new layers: nodes whose 3D object exists
+		bool Added = false;
+		for (size_t n = 0; n < Nodes.size(); n++)
+		{
+			if (Nodes[n].Obj == 0 || FindLayerByNode(Nodes[n].Id) >= 0)
+				continue;
+			int OI = FView->IndexOfUid(Nodes[n].Obj);
+			if (OI < 0)
+				continue;
+			TLayerRow L = MakeRow(Nodes[n].Id);
+			L.Name = Nodes[n].Name;
+			L.NodeAlive = true;
+			L.ObjIndex = OI;
+			L.ObjUid = Nodes[n].Obj;
+			const TSceneObj &O = FView->Obj(OI);
+			L.Tint = Rgb(O.R, O.G, O.B);
+			FLayers.push_back(L);
+			Added = true;
+		}
+		// 3) the node is gone: the layer goes away, unless it has key frames (then it stays as "(缺失)")
+		for (size_t j = FLayers.size(); j > 0; j--)
+			if (!FLayers[j - 1].NodeAlive && FLayers[j - 1].Keys.empty())
+				FLayers.erase(FLayers.begin() + (j - 1));
+		if (Added)
+			std::sort(FLayers.begin(), FLayers.end(), RowLess);		// creation order
+		// the selection follows its layer (indexes moved)
+		FSel = FindLayerByNode(SelId);
+		if (FSel < 0 && !FLayers.empty())
+			FSel = 0;
+		ClampScroll();
+	}
+	void PollSelection()		// object selected in the viewport -> its layer is highlighted
+	{
+		int S = FView->Selected;
+		if (S == FLastSel)
+			return;
+		FLastSel = S;
+		for (size_t j = 0; j < FLayers.size(); j++)
+			if (FLayers[j].ObjIndex == S && S >= 0)
+			{
+				FSel = static_cast<int>(j);
+				EnsureVisible(FSel);
+				break;
+			}
+		Invalidate();
+	}
+	void PollRecord()
+	{
+		bool Changed = false;
+		for (size_t j = 0; j < FLayers.size(); j++)
+		{
+			TLayerRow &L = FLayers[j];
+			int I = Bound(L);
+			TAnimPose Cur;
+			if (I < 0 || !ReadPose(I, Cur))
+				continue;
+			if (!L.HasLast || !FRecord)		// not recording: just follow the scene, so that switching it on makes no key
+			{
+				L.Last = Cur;
+				L.HasLast = true;
+				continue;
+			}
+			if (!PoseDiffers(Cur, L.Last))
+				continue;
+			if (L.Frozen || L.Locked)		// frozen / locked layers are never recorded
+			{
+				L.Last = Cur;
+				continue;
+			}
+			if (L.Keys.empty() && FFrame != FStart)
+				SetKey(L, FStart, L.Last);	// the animation starts with the old pose
+			SetKey(L, FFrame, Cur);
+			L.Last = Cur;
+			Changed = true;
+		}
+		if (Changed)
+			Invalidate();
+	}
+	void __fastcall TimerTick(TObject *Sender)
+	{
+		if (!FView)
+			return;
+		if ((FTick++ % 6) == 0)
+		{
+			SyncLayers();
+			PollSelection();
+			if (FPendingApply)			// file just opened: the objects are created by SceneLink within 100 ms
+			{
+				bool Ready = true;
+				for (size_t j = 0; j < FLayers.size(); j++)
+					if (FLayers[j].NodeAlive && !FLayers[j].Keys.empty() && Bound(FLayers[j]) < 0)
+						Ready = false;
+				if (Ready || ++FPendingTicks > 40)
+				{
+					FPendingApply = false;
+					ApplyAt(FFrame, true);
+				}
+			}
+			Invalidate();
+		}
+		if (FPlaying)
+			AdvancePlay();
+		else
+			PollRecord();
+	}
+	void __fastcall ResizeEvent(TObject *Sender) { ClampScroll(); Invalidate(); }
+	void __fastcall ButtonAction(int I)
+	{
+		switch (I)
+		{
+			case 0: SetPlaying(false); SetFrame(FStart); break;		// first frame
+			case 1: SetFrame(FFrame - 1); break;						// previous frame
+			case 2: SetPlaying(!FPlaying); break;						// play / pause
+			case 3: SetFrame(FFrame + 1); break;						// next frame
+			case 4: SetPlaying(false); SetFrame(FEnd); break;			// last frame
+			case 5: FLoop = !FLoop; Invalidate(); break;				// loop
+			case 6:														// record (auto key)
+				FRecord = !FRecord;
+				if (FRecord && FPlaying)
+					SetPlaying(false);
+				Invalidate();
+				break;
+			case 7:														// key from the current pose of the selected layer
+				if (FSel >= 0 && FSel < static_cast<int>(FLayers.size()))
+					KeyFromObject(FLayers[FSel]);
+				Invalidate();
+				break;
+		}
+	}
+	static const wchar_t *BtnHint(int I)
+	{
+		switch (I)
+		{
+			case 0: return L"首帧";									// 首帧
+			case 1: return L"上一帧";								// 上一帧
+			case 2: return L"播放 / 暂停";					// 播放 / 暂停
+			case 3: return L"下一帧";								// 下一帧
+			case 4: return L"末帧";									// 末帧
+			case 5: return L"循环播放";						// 循环播放
+			case 6: return L"录制（自动关键帧）";	// 录制（自动关键帧）
+			case 7: return L"在当前帧为选中图层设置关键帧";	// 在当前帧为选中图层设置关键帧
+		}
+		return L"";
+	}
+	void Txt(int X, int Y, const String &S, TColor Col)
+	{
+		Canvas->Brush->Style = bsClear;
+		Canvas->Font->Color = Col;
+		Canvas->TextOut(X, Y, S);
+		Canvas->Brush->Style = bsSolid;
+	}
+
+	// ---- icons (drawn with lines / shapes, 16 x 16 around the centre point) ----
+	void DrawGlyph(int Id, int cx, int cy, TColor Col)
+	{
+		TCanvas *C = Canvas;
+		C->Pen->Color = Col;  C->Pen->Width = 1;
+		C->Brush->Style = bsSolid;  C->Brush->Color = Col;
+		switch (Id)
+		{
+			case 0:		// |<
+			{
+				C->FillRect(TRect(cx - 6, cy - 5, cx - 4, cy + 6));
+				TPoint P[3] = { TPoint(cx + 5, cy - 5), TPoint(cx + 5, cy + 5), TPoint(cx - 3, cy) };
+				PolyN(C, P, 3);
+				break;
+			}
+			case 1:		// <
+			{
+				TPoint P[3] = { TPoint(cx + 4, cy - 5), TPoint(cx + 4, cy + 5), TPoint(cx - 4, cy) };
+				PolyN(C, P, 3);
+				break;
+			}
+			case 2:		// play / pause
+			{
+				if (FPlaying)
+				{
+					C->FillRect(TRect(cx - 5, cy - 5, cx - 1, cy + 6));
+					C->FillRect(TRect(cx + 2, cy - 5, cx + 6, cy + 6));
+				}
+				else
+				{
+					TPoint P[3] = { TPoint(cx - 4, cy - 6), TPoint(cx - 4, cy + 6), TPoint(cx + 5, cy) };
+					PolyN(C, P, 3);
+				}
+				break;
+			}
+			case 3:		// >
+			{
+				TPoint P[3] = { TPoint(cx - 4, cy - 5), TPoint(cx - 4, cy + 5), TPoint(cx + 4, cy) };
+				PolyN(C, P, 3);
+				break;
+			}
+			case 4:		// >|
+			{
+				TPoint P[3] = { TPoint(cx - 5, cy - 5), TPoint(cx - 5, cy + 5), TPoint(cx + 3, cy) };
+				PolyN(C, P, 3);
+				C->FillRect(TRect(cx + 4, cy - 5, cx + 6, cy + 6));
+				break;
+			}
+			case 5:		// loop
+			{
+				C->Brush->Style = bsClear;
+				C->Pen->Width = 2;
+				C->RoundRect(cx - 6, cy - 4, cx + 7, cy + 5, 6, 6);
+				C->Pen->Width = 1;
+				C->Brush->Style = bsSolid;
+				TPoint P[3] = { TPoint(cx + 2, cy - 8), TPoint(cx + 2, cy), TPoint(cx + 7, cy - 4) };
+				PolyN(C, P, 3);
+				break;
+			}
+			case 6:		// record: red dot
+			{
+				C->Brush->Color = Rgb(235, 64, 52);
+				C->Pen->Color   = Rgb(235, 64, 52);
+				C->Ellipse(cx - 5, cy - 5, cx + 6, cy + 6);
+				break;
+			}
+			case 7:		// set key: diamond
+			{
+				C->Brush->Color = Rgb(255, 196, 64);
+				C->Pen->Color   = Rgb(150, 105, 20);
+				TPoint P[4] = { TPoint(cx, cy - 6), TPoint(cx + 6, cy), TPoint(cx, cy + 6), TPoint(cx - 6, cy) };
+				PolyN(C, P, 4);
+				break;
+			}
+		}
+	}
+	void DrawEye(int cx, int cy, bool On, TColor Col)
+	{
+		TCanvas *C = Canvas;
+		C->Pen->Color = Col;  C->Pen->Width = 1;
+		C->Brush->Style = bsClear;
+		C->Ellipse(cx - 8, cy - 5, cx + 9, cy + 6);
+		C->Brush->Style = bsSolid;  C->Brush->Color = Col;
+		C->Ellipse(cx - 3, cy - 3, cx + 4, cy + 4);
+		if (!On)		// hidden: struck through
+		{
+			C->Pen->Width = 2;
+			Ln(cx - 8, cy + 7, cx + 9, cy - 7);
+			C->Pen->Width = 1;
+		}
+	}
+	void DrawFreeze(int cx, int cy, bool Frozen, TColor Col)		// frozen = snowflake, thawed = sun
+	{
+		TCanvas *C = Canvas;
+		C->Pen->Color = Col;  C->Pen->Width = 1;
+		C->Brush->Style = bsClear;
+		if (Frozen)
+		{
+			Ln(cx, cy - 8, cx, cy + 9);
+			Ln(cx - 7, cy - 4, cx + 8, cy + 5);
+			Ln(cx - 7, cy + 5, cx + 8, cy - 4);
+			Ln(cx - 3, cy - 5, cx, cy - 8);   Ln(cx, cy - 8, cx + 4, cy - 4);
+			Ln(cx - 3, cy + 5, cx, cy + 8);   Ln(cx, cy + 8, cx + 4, cy + 4);
+		}
+		else
+		{
+			C->Ellipse(cx - 3, cy - 3, cx + 4, cy + 4);
+			Ln(cx, cy - 8, cx, cy - 5);   Ln(cx, cy + 5, cx, cy + 9);
+			Ln(cx - 8, cy, cx - 5, cy);   Ln(cx + 5, cy, cx + 9, cy);
+			Ln(cx - 6, cy - 6, cx - 4, cy - 4);   Ln(cx + 6, cy - 6, cx + 4, cy - 4);
+			Ln(cx - 6, cy + 6, cx - 4, cy + 4);   Ln(cx + 6, cy + 6, cx + 4, cy + 4);
+		}
+	}
+	void DrawLock(int cx, int cy, bool Locked, TColor Col)
+	{
+		TCanvas *C = Canvas;
+		C->Pen->Color = Col;  C->Pen->Width = 2;
+		C->Brush->Style = bsClear;
+		if (Locked)
+			C->RoundRect(cx - 4, cy - 8, cx + 5, cy + 2, 6, 6);			// closed shackle
+		else
+			C->RoundRect(cx + 0, cy - 10, cx + 9, cy - 1, 6, 6);			// open shackle
+		C->Pen->Width = 1;
+		C->Brush->Style = bsSolid;  C->Brush->Color = Col;
+		C->RoundRect(cx - 6, cy - 1, cx + 7, cy + 8, 3, 3);				// body
+	}
+
+	// major tick step (frames) for the ruler
+	int MajorStep()
+	{
+		static const int Steps[11] = { 1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000 };
+		double Ppf = static_cast<double>(TrackR() - TrackL()) / (FEnd - FStart);
+		for (int i = 0; i < 11; i++)
+			if (Steps[i] * Ppf >= 46.0)
+				return Steps[i];
+		return 1000;
+	}
+	// "位置 x, y, z   旋转 x, y, z   缩放 x, y, z" of the object of the selected layer (live values)
+	String PoseText()
+	{
+		if (FSel < 0 || FSel >= static_cast<int>(FLayers.size()))
+			return String();
+		TAnimPose Z;
+		int I = Bound(FLayers[FSel]);
+		if (I < 0 || !ReadPose(I, Z))
+			return String();
+		const float Deg = 57.2957795131f;
+		return L"位置 " + AnimNum(Z.P[0]) + L", " + AnimNum(Z.P[1]) + L", " + AnimNum(Z.P[2]) +
+			   L"    旋转 " + AnimNum(Z.R[0] * Deg) + L", " + AnimNum(Z.R[1] * Deg) + L", " + AnimNum(Z.R[2] * Deg) +
+			   L"    缩放 " + AnimNum(Z.S[0]) + L", " + AnimNum(Z.S[1]) + L", " + AnimNum(Z.S[2]);
+	}
+
+protected:
+	virtual void __fastcall Notification(TComponent *AComponent, TOperation Operation)
+	{
+		TCustomControl::Notification(AComponent, Operation);
+		if (Operation == opRemove && AComponent == FView)
+		{
+			FView = NULL;
+			FTimer->Enabled = false;
+		}
+		if (Operation == opRemove && AComponent == FGraph)
+			FGraph = NULL;
+	}
+	virtual void __fastcall Paint()
+	{
+		TCanvas *C = Canvas;
+		const int W = ClientWidth, H = ClientHeight;
+		const TColor Bg   = FDark ? Rgb(DARK_BAR_R, DARK_BAR_G, DARK_BAR_B) : clWhite;
+		const TColor Fg   = FDark ? clWhite : clBlack;
+		const TColor Pane = MixColor(Bg, Fg, 7);
+		const TColor Line = MixColor(Bg, Fg, 24);
+		const TColor Dim  = MixColor(Bg, Fg, 48);
+		const TColor Acc  = Rgb(0, 122, 204);
+		const TColor KeyC = Rgb(255, 196, 64);
+		const TColor Head = Rgb(235, 64, 52);
+		const TColor Ice  = Rgb(90, 170, 255);
+		const int TL = TrackL(), TR = TrackR();
+		const int SliderTop = ToolH, RulerTop = ToolH + SliderH;
+
+		C->Font->Name = L"Segoe UI";
+		C->Font->Size = 9;
+		C->Font->Style = TFontStyles();
+		C->Pen->Style = psSolid;
+		C->Pen->Width = 1;
+		C->Brush->Style = bsSolid;
+		C->Brush->Color = Bg;
+		C->FillRect(TRect(0, 0, W, H));
+
+		// ---------------- transport bar ----------------
+		C->Brush->Color = Pane;
+		C->FillRect(TRect(0, 0, W, ToolH));
+		C->Pen->Color = Line;
+		Ln(0, ToolH - 1, W, ToolH - 1);
+		for (int i = 0; i < BtnCount; i++)
+		{
+			TRect B = BtnRect(i);
+			bool On = (i == 2 && FPlaying) || (i == 5 && FLoop) || (i == 6 && FRecord);
+			C->Brush->Style = bsSolid;
+			C->Brush->Color = On ? MixColor(Pane, (i == 6) ? Head : Acc, 55) : MixColor(Pane, Fg, 10);
+			C->Pen->Color   = On ? ((i == 6) ? Head : Acc) : Line;
+			C->Rectangle(B.Left, B.Top, B.Right, B.Bottom);
+			DrawGlyph(i, (B.Left + B.Right) / 2, (B.Top + B.Bottom) / 2, Fg);
+		}
+		{
+			int X0 = BtnRect(BtnCount - 1).Right + 20;
+			String S1 = L"帧: " + IntToStr(FFrame) + L" / " + IntToStr(FEnd);			// 帧: n / N
+			int TY = (ToolH - C->TextHeight(S1)) / 2;
+			Txt(X0, TY, S1, Fg);
+			X0 += C->TextWidth(S1) + 26;
+			String S2 = L"帧率: " + IntToStr(FFps) + L" fps";						// 帧率: 30 fps
+			Txt(X0, TY, S2, Dim);
+			X0 += C->TextWidth(S2) + 26;
+			String S3 = PoseText();
+			if (S3.IsEmpty())
+				S3 = L"范围: " + IntToStr(FStart) + L" - " + IntToStr(FEnd);			// 范围: 0 - 100
+			if (X0 + C->TextWidth(S3) < W - 8)
+				Txt(X0, TY, S3, Dim);
+		}
+
+		// ---------------- time slider ----------------
+		{
+			int My = SliderTop + SliderH / 2;
+			int Tx = FrameToX(FFrame);
+			String Tm = L"时间: " + FloatToStrF(static_cast<double>(FFrame - FStart) / FFps, ffFixed, 7, 2) + L" s";	// 时间: x.xx s
+			Txt(8, SliderTop + (SliderH - C->TextHeight(Tm)) / 2, Tm, Fg);
+			C->Brush->Style = bsSolid;
+			C->Brush->Color = MixColor(Bg, Fg, 20);
+			C->FillRect(TRect(TL, My - 2, TR + 1, My + 3));						// groove
+			C->Brush->Color = Acc;
+			C->FillRect(TRect(TL, My - 2, Tx + 1, My + 3));						// elapsed part
+			C->Brush->Color = Acc;
+			C->Pen->Color = MixColor(Acc, clWhite, 45);
+			C->RoundRect(Tx - 18, My - 10, Tx + 19, My + 11, 8, 8);				// thumb
+			String Fs = IntToStr(FFrame);
+			C->Font->Style = TFontStyles() << fsBold;
+			Txt(Tx - C->TextWidth(Fs) / 2, My - C->TextHeight(Fs) / 2, Fs, clWhite);
+			C->Font->Style = TFontStyles();
+			C->Pen->Color = Line;
+			Ln(0, RulerTop - 1, W, RulerTop - 1);
+		}
+
+		// ---------------- ruler ----------------
+		C->Brush->Style = bsSolid;
+		C->Brush->Color = Pane;
+		C->FillRect(TRect(0, RulerTop, W, RowsTop));
+		Txt(8, RulerTop + (RulerH - C->TextHeight(L"A")) / 2, L"图层", Dim);		// 图层
+		const int Major = MajorStep();
+		const int Minor = std::max(1, Major / 5);
+		const double Ppf = static_cast<double>(TR - TL) / (FEnd - FStart);
+		for (int F = FStart; F <= FEnd; F += Minor)
+		{
+			bool IsMajor = ((F - FStart) % Major) == 0;
+			if (!IsMajor && Ppf * Minor < 3.0)
+				continue;
+			int X = FrameToX(F);
+			C->Pen->Color = IsMajor ? MixColor(Bg, Fg, 55) : Line;
+			Ln(X, RowsTop - (IsMajor ? 10 : 5), X, RowsTop - 1);
+			if (IsMajor)
+			{
+				String Lb = IntToStr(F);
+				Txt(X - C->TextWidth(Lb) / 2, RulerTop + 1, Lb, Dim);
+			}
+		}
+		C->Pen->Color = Line;
+		Ln(0, RowsTop - 1, W, RowsTop - 1);
+
+		// ---------------- layer rows ----------------
+		const int RowCount = static_cast<int>(FLayers.size());
+		for (int i = FTopRow; i < RowCount; i++)
+		{
+			const int Top = RowsTop + (i - FTopRow) * RowH, Bot = Top + RowH, Cy = Top + RowH / 2;
+			if (Top >= H)
+				break;
+			const TLayerRow &L = FLayers[i];
+			const bool Gone = !L.NodeAlive;
+			const bool Sel = (i == FSel);
+			C->Brush->Style = bsSolid;
+			C->Brush->Color = Sel ? MixColor(Bg, Acc, 24) : ((i & 1) ? MixColor(Bg, Fg, 3) : Bg);
+			C->FillRect(TRect(NameW, Top, W, Bot));							// track area
+			C->Brush->Color = Sel ? MixColor(Pane, Acc, 30) : Pane;
+			C->FillRect(TRect(0, Top, NameW, Bot));							// name column
+			C->Pen->Color = Line;
+			Ln(0, Bot - 1, W, Bot - 1);
+
+			// icons: show / freeze / lock
+			DrawEye(18, Cy, L.Visible, L.Visible ? Fg : Dim);
+			DrawFreeze(42, Cy, L.Frozen, L.Frozen ? Ice : MixColor(Bg, Rgb(230, 180, 60), 65));
+			DrawLock(66, Cy, L.Locked, L.Locked ? Rgb(240, 170, 70) : Dim);
+			// colour swatch + name
+			C->Brush->Style = bsSolid;
+			C->Brush->Color = (L.Frozen || Gone) ? MixColor(Pane, L.Tint, 35) : L.Tint;
+			C->Pen->Color = MixColor(L.Tint, clBlack, 35);
+			C->Rectangle(92, Cy - 5, 102, Cy + 6);
+			{
+				String Nm = Gone ? (L.Name + L"  (缺失)") : L.Name;			// (缺失)
+				TRect NR(110, Top, NameW - 6, Bot);
+				C->Brush->Style = bsClear;
+				C->Font->Color = (L.Frozen || !L.Visible || Gone) ? Dim : Fg;
+				DrawText(C->Handle, Nm.c_str(), -1, &NR, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS | DT_NOPREFIX);
+				C->Brush->Style = bsSolid;
+			}
+		}
+		// vertical grid lines (major ticks) behind the key frames
+		{
+			int GridBot = std::min(H, RowsTop + (RowCount - FTopRow) * RowH);
+			C->Pen->Color = MixColor(Bg, Fg, 10);
+			for (int F = FStart; F <= FEnd; F += Major)
+			{
+				int X = FrameToX(F);
+				Ln(X, RowsTop, X, GridBot);
+			}
+		}
+		// key frames
+		for (int i = FTopRow; i < RowCount; i++)
+		{
+			const TLayerRow &L = FLayers[i];
+			const int RowTop = RowsTop + (i - FTopRow) * RowH;
+			const int Cy = RowTop + RowH / 2;
+			if (RowTop >= H)
+				break;
+			TColor Fill = L.Frozen ? Rgb(80, 105, 130) : (L.Locked ? MixColor(Bg, KeyC, 55) : KeyC);
+			if (!L.Visible || !L.NodeAlive)
+				Fill = Dim;
+			for (size_t k = 0; k < L.Keys.size(); k++)
+			{
+				int X = FrameToX(L.Keys[k].Frame);
+				TPoint P[4] = { TPoint(X, Cy - 6), TPoint(X + 5, Cy), TPoint(X, Cy + 6), TPoint(X - 5, Cy) };
+				C->Brush->Style = bsSolid;
+				C->Brush->Color = Fill;
+				C->Pen->Color = MixColor(Fill, clBlack, 45);
+				PolyN(C, P, 4);
+			}
+		}
+		// column separator
+		C->Pen->Color = Line;
+		Ln(NameW, RulerTop, NameW, H);
+		// scroll indicator (many layers)
+		if (RowCount > VisibleRows())
+		{
+			int AreaH = H - RowsTop;
+			int ThumbH = std::max(16, AreaH * VisibleRows() / RowCount);
+			int Range = RowCount - VisibleRows();
+			int ThumbY = RowsTop + (Range > 0 ? (AreaH - ThumbH) * FTopRow / Range : 0);
+			C->Brush->Style = bsSolid;
+			C->Brush->Color = MixColor(Bg, Fg, 28);
+			C->FillRect(TRect(W - 5, ThumbY, W - 1, ThumbY + ThumbH));
+		}
+
+		// ---------------- play head ----------------
+		{
+			int X = FrameToX(FFrame);
+			C->Pen->Color = Head;
+			Ln(X, RulerTop, X, H);
+			C->Brush->Style = bsSolid;
+			C->Brush->Color = Head;
+			TPoint P[3] = { TPoint(X - 6, RulerTop + 2), TPoint(X + 6, RulerTop + 2), TPoint(X, RulerTop + 13) };
+			PolyN(C, P, 3);
+		}
+		// recording: red frame around the whole window
+		if (FRecord)
+		{
+			C->Brush->Color = Head;
+			C->FrameRect(TRect(0, 0, W, H));
+			C->FrameRect(TRect(1, 1, W - 1, H - 1));
+		}
+	}
+
+	DYNAMIC void __fastcall MouseDown(TMouseButton Button, TShiftState Shift, int X, int Y)
+	{
+		TCustomControl::MouseDown(Button, Shift, X, Y);
+		if (Button != mbLeft)
+			return;
+		if (CanFocus())
+			SetFocus();					// Delete key
+		FDrag = 0;
+		if (Y < ToolH)
+		{
+			for (int i = 0; i < BtnCount; i++)
+				if (BtnRect(i).Contains(Point(X, Y)))
+					ButtonAction(i);
+			return;
+		}
+		if (Y < RowsTop)		// slider row or ruler: scrub
+		{
+			if (X >= TrackL() - 12)
+			{
+				FDrag = (Y < ToolH + SliderH) ? 2 : 1;
+				SetFrame(XToFrame(X));
+			}
+			return;
+		}
+		int Row = FTopRow + (Y - RowsTop) / RowH;
+		if (Row < 0 || Row >= static_cast<int>(FLayers.size()))
+			return;
+		TLayerRow &L = FLayers[Row];
+		FSel = Row;
+		if (X < NameW)
+		{
+			TPoint Pt = Point(X, Y);
+			if (IconRect(0, Row).Contains(Pt))      L.Visible = !L.Visible;
+			else if (IconRect(1, Row).Contains(Pt))
+			{
+				L.Frozen = !L.Frozen;
+				L.HasLast = false;			// forget the pose seen before: no key from changes made while frozen
+			}
+			else if (IconRect(2, Row).Contains(Pt)) L.Locked  = !L.Locked;
+		}
+		else if (X >= TrackL() - 8)
+		{
+			if (Shift.Contains(ssDouble))
+				ToggleKeyAt(L, XToFrame(X));
+			else
+			{
+				FDrag = 1;
+				SetFrame(XToFrame(X));
+			}
+		}
+		Invalidate();
+	}
+	DYNAMIC void __fastcall MouseMove(TShiftState Shift, int X, int Y)
+	{
+		TCustomControl::MouseMove(Shift, X, Y);
+		if (FDrag != 0)
+		{
+			SetFrame(XToFrame(X));
+			return;
+		}
+		int Hot = -1;
+		if (Y < ToolH)
+			for (int i = 0; i < BtnCount; i++)
+				if (BtnRect(i).Contains(Point(X, Y)))
+					Hot = i;
+		if (Hot != FHotBtn)
+		{
+			FHotBtn = Hot;
+			Hint = (Hot >= 0) ? String(BtnHint(Hot)) : String();
+			Application->CancelHint();
+		}
+	}
+	DYNAMIC void __fastcall MouseUp(TMouseButton Button, TShiftState Shift, int X, int Y)
+	{
+		TCustomControl::MouseUp(Button, Shift, X, Y);
+		FDrag = 0;
+	}
+	DYNAMIC void __fastcall KeyDown(Word &Key, TShiftState Shift)
+	{
+		TCustomControl::KeyDown(Key, Shift);
+		if (Key != VK_DELETE || FSel < 0 || FSel >= static_cast<int>(FLayers.size()))
+			return;
+		TLayerRow &L = FLayers[FSel];
+		if (!L.NodeAlive && !Shift.Contains(ssShift))		// missing object: Delete removes the layer
+		{
+			FLayers.erase(FLayers.begin() + FSel);
+			if (FSel >= static_cast<int>(FLayers.size()))
+				FSel = static_cast<int>(FLayers.size()) - 1;
+			ClampScroll();
+		}
+		else if (!L.Frozen && !L.Locked)
+		{
+			if (Shift.Contains(ssShift))
+				L.Keys.clear();									// Shift+Delete: all keys of the layer
+			else
+			{
+				int At = FindKey(L, FFrame);						// Delete: the key at the current frame
+				if (At >= 0)
+					L.Keys.erase(L.Keys.begin() + At);
+			}
+		}
+		Key = 0;
+		Invalidate();
+	}
+	DYNAMIC bool __fastcall DoMouseWheel(TShiftState Shift, int WheelDelta, const TPoint &MousePos)
+	{
+		FTopRow += (WheelDelta > 0) ? -1 : 1;
+		ClampScroll();
+		Invalidate();
+		return true;
+	}
+
+public:
+	TNotifyEvent OnApplied;		// the animation wrote new values into the objects (property panel refreshes)
+
+	__fastcall TAnimTimeline(TComponent *Owner)
+		: TCustomControl(Owner), FStart(0), FEnd(100), FFps(30), FFrame(0), FSel(-1), FDrag(0),
+		  FTopRow(0), FLastSel(-2), FTick(0), FHotBtn(-1),
+		  FPlaying(false), FLoop(true), FDark(true), FRecord(false),
+		  FPlayT0(0), FLastNotify(0), FLastApplyTick(0), FPlayF0(0), FTimer(NULL), FView(NULL), FGraph(NULL), FPendingApply(false), FPendingTicks(0)
+	{
+		OnApplied = NULL;
+		DoubleBuffered = true;
+		ControlStyle = ControlStyle << csDoubleClicks;		// double click = add / remove key frame
+		ShowHint = true;
+		OnResize = ResizeEvent;
+		FTimer = new TTimer(this);
+		FTimer->Enabled  = false;
+		FTimer->Interval = 15;
+		FTimer->OnTimer  = TimerTick;
+	}
+	void __fastcall SetView(TViewport3D *V, TViewport2D *G)
+	{
+		FView  = V;
+		FGraph = G;
+		if (FView)
+			FView->FreeNotification(this);
+		if (FGraph)
+			FGraph->FreeNotification(this);
+		if (FView && FGraph)
+		{
+			SyncLayers();
+			FTimer->Enabled = true;
+		}
+		Invalidate();
+	}
+
+	// ---- .yu file: the animation as text records (TAB separated, see TViewport2D::ExtraLines) ----
+	//   anim    start end fps loop
+	//   alayer  nodeId visible frozen locked            (only layers that have key frames or non-default icons)
+	//   akey    nodeId frame  px py pz  rx ry rz  sx sy sz
+	// A project without any animation writes nothing, so its file stays the same as before.
+	void SaveLines(std::vector<String> &Out)
+	{
+		Out.clear();
+		bool Any = false;
+		for (size_t j = 0; j < FLayers.size(); j++)
+		{
+			const TLayerRow &L = FLayers[j];
+			if (L.NodeAlive && (!L.Keys.empty() || !L.Visible || L.Frozen || L.Locked))
+				Any = true;
+		}
+		if (!Any)
+			return;
+		Out.push_back(L"anim\t" + IntToStr(FStart) + L"\t" + IntToStr(FEnd) + L"\t" + IntToStr(FFps) + L"\t" + IntToStr(FLoop ? 1 : 0));
+		for (size_t j = 0; j < FLayers.size(); j++)
+		{
+			const TLayerRow &L = FLayers[j];
+			if (!L.NodeAlive || (L.Keys.empty() && L.Visible && !L.Frozen && !L.Locked))
+				continue;
+			Out.push_back(L"alayer\t" + IntToStr(L.NodeId) + L"\t" + IntToStr(L.Visible ? 1 : 0) + L"\t" +
+						  IntToStr(L.Frozen ? 1 : 0) + L"\t" + IntToStr(L.Locked ? 1 : 0));
+			for (size_t k = 0; k < L.Keys.size(); k++)
+			{
+				const TAnimKey &K = L.Keys[k];
+				String S = L"akey\t" + IntToStr(L.NodeId) + L"\t" + IntToStr(K.Frame);
+				for (int i = 0; i < 3; i++) S += L"\t" + AnimFileNum(K.V.P[i]);
+				for (int i = 0; i < 3; i++) S += L"\t" + AnimFileNum(K.V.R[i]);
+				for (int i = 0; i < 3; i++) S += L"\t" + AnimFileNum(K.V.S[i]);
+				Out.push_back(S);
+			}
+		}
+	}
+	// replaces everything (an empty list = a project without animation: "New")
+	void LoadLines(const std::vector<String> &In)
+	{
+		SetPlaying(false);
+		FRecord = false;
+		FLayers.clear();
+		FSel = -1;  FTopRow = 0;  FLastSel = -2;
+		FStart = 0;  FEnd = 100;  FFps = 30;
+		std::vector<String> F;
+		for (size_t i = 0; i < In.size(); i++)
+		{
+			AnimSplitTab(In[i], F);
+			if (F.empty())
+				continue;
+			if (F[0] == L"anim" && F.size() >= 4)
+			{
+				int S = StrToIntDef(F[1], 0), E = StrToIntDef(F[2], 100), Fp = StrToIntDef(F[3], 30);
+				if (E > S && E - S <= 100000 && Fp >= 1 && Fp <= 240)
+				{
+					FStart = S;  FEnd = E;  FFps = Fp;
+				}
+				if (F.size() >= 5)
+					FLoop = StrToIntDef(F[4], 1) != 0;
+			}
+			else if (F[0] == L"alayer" && F.size() >= 5)
+			{
+				int Id = StrToIntDef(F[1], 0);
+				if (Id <= 0 || FindLayerByNode(Id) >= 0)
+					continue;
+				TLayerRow L = MakeRow(Id);
+				L.Visible = StrToIntDef(F[2], 1) != 0;
+				L.Frozen  = StrToIntDef(F[3], 0) != 0;
+				L.Locked  = StrToIntDef(F[4], 0) != 0;
+				FLayers.push_back(L);
+			}
+			else if (F[0] == L"akey" && F.size() >= 12)
+			{
+				int J  = FindLayerByNode(StrToIntDef(F[1], 0));
+				int Fr = StrToIntDef(F[2], -1);
+				if (J < 0 || Fr < FStart || Fr > FEnd)
+					continue;
+				TAnimPose Z;
+				for (int k = 0; k < 3; k++)
+				{
+					Z.P[k] = AnimFileNumIn(F[3 + k], 0.0f);
+					Z.R[k] = AnimFileNumIn(F[6 + k], 0.0f);
+					Z.S[k] = AnimFileNumIn(F[9 + k], 1.0f);
+				}
+				SetKey(FLayers[J], Fr, Z);
+			}
+		}
+		std::sort(FLayers.begin(), FLayers.end(), RowLess);
+		FFrame = FStart;
+		FPendingApply = true;			// the objects do not exist yet: SceneLink creates them from the nodes
+		FPendingTicks = 0;
+		SyncLayers();
+		Invalidate();
+	}
+	// the animation is moving the objects right now (playing, dragging the slider, a file was just opened): the pose changes
+	// are not edits of the user, the undo history must not record them
+	bool Busy() const
+	{
+		return FPlaying || FDrag != 0 || FPendingApply || static_cast<DWORD>(GetTickCount() - FLastApplyTick) < 500;
+	}
+	// after undo / redo: the objects were put back by hand, "recording" must not turn that into key frames
+	void ForgetPoses()
+	{
+		for (size_t j = 0; j < FLayers.size(); j++)
+			FLayers[j].HasLast = false;
+	}
+	void __fastcall ApplyTheme(bool ADark)
+	{
+		FDark = ADark;
+		StyleElements = TStyleElements();
+		Invalidate();
+	}
+};
+
+static TAnimTimeline *g_AnimTimeline = NULL;
+// created after the docking layout exists (same reason as the "Create" controls)
+static std::vector<String> g_AnimPendingLines;		// lines that arrived before the timeline window exists
+static void InitAnimTimeline(TForm *DockForm, bool ADark, TViewport3D *View, TViewport2D *Graph, TNotifyEvent AOnApplied)
+{
+	if (!DockForm || g_AnimTimeline)
+		return;
+	g_AnimTimeline = new TAnimTimeline(DockForm);
+	g_AnimTimeline->Parent = DockForm;
+	g_AnimTimeline->Align  = alClient;
+	g_AnimTimeline->OnApplied = AOnApplied;
+	g_AnimTimeline->ApplyTheme(ADark);
+	g_AnimTimeline->SetView(View, Graph);
+	if (!g_AnimPendingLines.empty())
+	{
+		g_AnimTimeline->LoadLines(g_AnimPendingLines);
+		g_AnimPendingLines.clear();
+	}
+	DockForm->Realign();
+}
+// .yu file <-> timeline (declared before TProjectFile)
+static void AnimCollectLines(std::vector<String> &Out)
+{
+	if (g_AnimTimeline)
+		g_AnimTimeline->SaveLines(Out);
+	else
+		Out = g_AnimPendingLines;
+}
+static void AnimRestoreLines(const std::vector<String> &In)
+{
+	if (g_AnimTimeline)
+		g_AnimTimeline->LoadLines(In);
+	else
+		g_AnimPendingLines = In;
+}
+static bool AnimTimelineBusy() { return g_AnimTimeline && g_AnimTimeline->Busy(); }
+static void AnimTimelineForgetPoses() { if (g_AnimTimeline) g_AnimTimeline->ForgetPoses(); }
+//---------------------------------------------------------------------------
+// Menu commands of the main form that need some state: Edit (Undo / Redo / Cut / Copy / Paste / Delete) and Player
+// (Restart / Refresh / Shutdown). Own class, so Unit1.h does not change.
+//
+// Undo / redo = snapshots of the whole project: the node graph (TViewport2D::GetState) together with the 3D objects
+// (the nodes refer to the objects by uid, so both must always go back together; SceneLink then finds them consistent).
+//   * every 120 ms a fingerprint of that state is taken; when it changed and stayed the same for two ticks and the left mouse
+//     button is up, the state becomes a new history step (so one drag = one step, and the 3D object and its 2D node, which
+//     SceneLink updates 100 ms later, are one step too)
+//   * while the animation moves the objects (playing, slider) nothing is recorded; the current step just follows
+//   * New / Open start a new history (no undo back into the previous project)
+//   * not in the history: the animation key frames, the camera, the selection
+class TSceneCommands : public TObject
+{
+private:
+	struct TSnapshot
+	{
+		TViewport2D::TGraphState G;
+		std::vector<TSceneObj>   Objs;
+	};
+	enum { MaxHistory = 100, TickMs = 120, StableTicks = 2 };
+	TForm        *FForm;
+	TViewport3D  *FView;
+	TViewport2D  *FGraph;
+	TMenuItem    *FUndoItem, *FRedoItem, *FShutdownItem;
+	TTimer       *FTimer;
+	std::vector<TSnapshot> FHist;
+	int           FCur;				// index of the step that matches the current state, -1 = no history yet
+	unsigned long long FLastHash;	// fingerprint of FHist[FCur]
+	unsigned long long FPendingHash;
+	int           FStable;			// ticks the state has stayed at FPendingHash
+	int           FSuppress;		// ticks to wait after a restore / project change, the state settles first
+	bool          FRebase;			// after the wait: start a new history (project replaced) instead of continuing the old one
+
+	unsigned long long CurrentHash()
+	{
+		TStateHash H;
+		FGraph->GraphHash(H);
+		const int N = FView->ObjectCount();
+		H.Int(N);
+		for (int i = 0; i < N; i++)
+		{
+			const TSceneObj &O = FView->Obj(i);
+			H.Int(O.Uid); H.Str(O.Name); H.Str(O.Kind);
+			H.Flt(O.Pos.x);  H.Flt(O.Pos.y);  H.Flt(O.Pos.z);
+			H.Flt(O.Rot.x);  H.Flt(O.Rot.y);  H.Flt(O.Rot.z);
+			H.Flt(O.Half.x); H.Flt(O.Half.y); H.Flt(O.Half.z);
+			H.Int(O.R); H.Int(O.G); H.Int(O.B);
+		}
+		return H.H;
+	}
+	void Capture(TSnapshot &S)
+	{
+		FGraph->GetState(S.G);
+		FView->GetObjects(S.Objs);
+	}
+	void Follow()			// the state is what it is: no new step, the current one is brought up to date
+	{
+		FLastHash = FPendingHash = CurrentHash();
+		FStable = 0;
+		if (FCur >= 0)
+			Capture(FHist[FCur]);
+	}
+	void Rebase()
+	{
+		FHist.clear();
+		TSnapshot S;
+		Capture(S);
+		FHist.push_back(S);
+		FCur = 0;
+		FLastHash = FPendingHash = CurrentHash();
+		FStable = 0;
+	}
+	void Push()
+	{
+		TSnapshot S;
+		Capture(S);
+		FHist.erase(FHist.begin() + (FCur + 1), FHist.end());		// a new edit ends the redo chain
+		FHist.push_back(S);
+		if (static_cast<int>(FHist.size()) > MaxHistory)
+			FHist.erase(FHist.begin());
+		FCur = static_cast<int>(FHist.size()) - 1;
+		FLastHash = FPendingHash = CurrentHash();
+		FStable = 0;
+	}
+	// an edit younger than two ticks is not a step yet: make it one, so that Undo goes back to the state before it
+	void CommitPending()
+	{
+		if (FCur >= 0 && CurrentHash() != FLastHash)
+			Push();
+	}
+	bool Restore(int Index)
+	{
+		const TSnapshot &S = FHist[Index];
+		if (!FView->ReplaceObjects(S.Objs))		// an object is being dragged right now
+			return false;
+		FGraph->SetState(S.G, true, false);		// keep zoom / pan; node ids are never handed out twice
+		std::vector<int> Sel;
+		FView->GetSelectedUids(Sel);
+		FGraph->SelectNodesByObj(Sel);			// the 2D selection follows the 3D one
+		FCur = Index;
+		AnimTimelineForgetPoses();
+		FSuppress = 4;							// SceneLink touches the values once more: wait, do not record that
+		FRebase   = false;
+		Follow();
+		FView->Invalidate();
+		return true;
+	}
+	void UpdateMenus()
+	{
+		const bool CanUndo = FCur > 0 || (FCur == 0 && FPendingHash != FLastHash);
+		const bool CanRedo = FCur >= 0 && FCur + 1 < static_cast<int>(FHist.size());
+		if (FUndoItem && FUndoItem->Enabled != CanUndo) FUndoItem->Enabled = CanUndo;
+		if (FRedoItem && FRedoItem->Enabled != CanRedo) FRedoItem->Enabled = CanRedo;
+		if (FShutdownItem)
+		{
+			const bool Open = RunWindowIsOpen() || StartWindowIsOpen();
+			if (FShutdownItem->Enabled != Open) FShutdownItem->Enabled = Open;
+		}
+	}
+	void __fastcall Tick(TObject *Sender)
+	{
+		UpdateMenus();
+		if (FSuppress > 0)
+		{
+			if (--FSuppress == 0 && FRebase)
+				Rebase();
+			else
+				Follow();
+			return;
+		}
+		if (AnimTimelineBusy())
+		{
+			Follow();
+			return;
+		}
+		const unsigned long long H = CurrentHash();
+		if (H == FLastHash)
+		{
+			FPendingHash = H;
+			FStable = 0;
+			return;
+		}
+		if (H != FPendingHash)			// still changing (dragging, or the other side of the link is catching up)
+		{
+			FPendingHash = H;
+			FStable = 0;
+			return;
+		}
+		if (++FStable < StableTicks)
+			return;
+		if (GetAsyncKeyState(VK_LBUTTON) < 0)		// mouse button still down: wait for the end of the drag
+			return;
+		Push();
+	}
+
+	// ---- where an Edit command goes ----
+	static TCustomEdit *FocusedEdit() { return dynamic_cast<TCustomEdit*>(Screen->ActiveControl); }	// text box / memo / grid editor
+	bool SceneHasFocus()		// the 3D / 2D view (or nothing in particular); not the file tree, which has its own Cut / Copy / Delete
+	{
+		TWinControl *A = Screen->ActiveControl;
+		return A == NULL || A == FView || A == FGraph;
+	}
+	void CopyScene()   { if (FGraph->Visible) FGraph->CopySelectedNodes();   else FView->CopySelectionToClipboard(); }
+	void PasteScene()  { if (FGraph->Visible) FGraph->PasteNodesAtCenter();  else FView->PasteClipboardObjects(); }
+	void DeleteScene() { if (FGraph->Visible) FGraph->DeleteSelectedNodes(); else FView->DeleteSelectedObjects(); }
+
+public:
+	__fastcall TSceneCommands(TForm *Form, TViewport3D *View, TViewport2D *Graph, TMenuItem *UndoItem, TMenuItem *RedoItem, TMenuItem *ShutdownItem)
+		: FForm(Form), FView(View), FGraph(Graph), FUndoItem(UndoItem), FRedoItem(RedoItem), FShutdownItem(ShutdownItem),
+		  FTimer(NULL), FCur(-1), FLastHash(0), FPendingHash(0), FStable(0), FSuppress(6), FRebase(true)
+	{
+		FTimer = new TTimer(Form);			// owned by the form
+		FTimer->Interval = TickMs;
+		FTimer->OnTimer  = Tick;
+		FTimer->Enabled  = true;
+	}
+	__fastcall ~TSceneCommands()
+	{
+		if (FTimer) FTimer->Enabled = false;
+	}
+
+	// New / Open: a different project, the history starts again once its objects exist
+	void __fastcall ProjectReplaced(TObject *Sender)
+	{
+		FSuppress = 6;
+		FRebase   = true;
+	}
+
+	// ---- Edit ----
+	void __fastcall Undo(TObject *Sender)
+	{
+		if (TCustomEdit *E = FocusedEdit()) { E->Undo(); return; }
+		if (FCur < 0) return;
+		if (FSuppress > 0) Follow(); else CommitPending();
+		if (FCur > 0) Restore(FCur - 1);
+		UpdateMenus();
+	}
+	void __fastcall Redo(TObject *Sender)
+	{
+		if (FocusedEdit() || FCur < 0) return;		// a text box has no redo
+		if (FCur + 1 < static_cast<int>(FHist.size())) Restore(FCur + 1);
+		UpdateMenus();
+	}
+	void __fastcall Cut(TObject *Sender)
+	{
+		if (TCustomEdit *E = FocusedEdit()) { E->CutToClipboard(); return; }
+		if (!SceneHasFocus()) return;
+		CopyScene();
+		DeleteScene();
+	}
+	void __fastcall Copy(TObject *Sender)
+	{
+		if (TCustomEdit *E = FocusedEdit()) { E->CopyToClipboard(); return; }
+		if (SceneHasFocus()) CopyScene();
+	}
+	void __fastcall Paste(TObject *Sender)
+	{
+		if (TCustomEdit *E = FocusedEdit()) { E->PasteFromClipboard(); return; }
+		if (SceneHasFocus()) PasteScene();
+	}
+	void __fastcall Delete(TObject *Sender)
+	{
+		if (TCustomEdit *E = FocusedEdit()) { E->ClearSelection(); return; }
+		if (SceneHasFocus()) DeleteScene();
+	}
+
+	// ---- Player (Run Project / Run Scene are the toolbar handlers RunClick / StartClick of the form) ----
+	// Restart: the open window(s) play again from the beginning; nothing open = same as Run Project
+	void __fastcall Restart(TObject *Sender)
+	{
+		const bool A = RestartRunWindow();
+		const bool B = RestartStartWindow();
+		if (!A && !B)
+			ShowRunWindow(FForm, FGraph, true);
+	}
+	// Shutdown: closes the windows (they are only hidden and kept for the next time)
+	void __fastcall Shutdown(TObject *Sender)
+	{
+		CloseRunWindow();
+		CloseStartWindow();
+	}
+	// Refresh: in the file tree F5 refreshes the tree (as before); otherwise the 3D objects and the nodes are synchronised
+	// and every view and open window is redrawn
+	void __fastcall Refresh(TObject *Sender)
+	{
+		TTreeView *T = dynamic_cast<TTreeView*>(Screen->ActiveControl);
+		if (T && T->OnKeyDown)
+		{
+			Word Key = VK_F5;
+			T->OnKeyDown(T, Key, TShiftState());
+			return;
+		}
+		SceneLink::Sync(FView, FGraph);
+		FView->Invalidate();
+		FGraph->Invalidate();
+		RefreshRunWindow();
+		RefreshStartWindow();
+	}
+};
+static TSceneCommands *g_SceneCmd = NULL;
+//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 __fastcall TForm1::TForm1(TComponent* Owner)
-	: TForm(Owner), FDark(false), FTreeMenu(NULL), FBarMenu(NULL), FmiShowThemeBar(NULL), FmiShowToolBar1(NULL), FmiShowToolBar2(NULL), FmiShowToolBar3(NULL), FmiShowToolBar4(NULL), FAllowRename(false), FDockServer(NULL), FDockStyle(NULL), FExploreForm(NULL), FCreateForm(NULL), FPropsForm(NULL), FOutputForm(NULL), FDockLaidOut(false), FLayoutLocked(false), FSdl(NULL), FSdl2(NULL), FThemeImages(NULL), FToolBarImages(NULL), FProps(NULL),
+	: TForm(Owner), FDark(false), FTreeMenu(NULL), FBarMenu(NULL), FmiShowThemeBar(NULL), FmiShowToolBar1(NULL), FmiShowToolBar2(NULL), FmiShowToolBar3(NULL), FmiShowToolBar4(NULL), FAllowRename(false), FDockServer(NULL), FDockStyle(NULL), FExploreForm(NULL), FCreateForm(NULL), FPropsForm(NULL), FOutputForm(NULL), FAnimForm(NULL), FDockLaidOut(false), FLayoutLocked(false), FSdl(NULL), FSdl2(NULL), FThemeImages(NULL), FToolBarImages(NULL), FProps(NULL),
 	  FSnapHoldTimer(NULL), FSnapLongPress(false), FViewMode(1), FSnapForm(NULL)
 {
 }
@@ -1044,6 +2699,9 @@ __fastcall TForm1::TForm1(TComponent* Owner)
 __fastcall TForm1::~TForm1()
 {
 	g_CreateDockControls = NULL;	// the dock form owns and destroys the control panel
+	g_AnimTimeline = NULL;
+	delete g_SceneCmd;				// (its timer belongs to the form)
+	g_SceneCmd = NULL;
 	if (g_MenuFrameHook)
 	{
 		UnhookWindowsHookEx(g_MenuFrameHook);
@@ -1801,12 +3459,6 @@ void __fastcall TForm1::InitToolBarVisibilityMenu()
     FBarMenu->OwnerDraw = true;
     FBarMenu->AutoHotkeys = maManual;
 
-    FmiShowThemeBar = new TMenuItem(FBarMenu);
-    FmiShowThemeBar->Caption = L"\u4E3B\u9898\u914D\u8272"; // 主题配色
-    FmiShowThemeBar->Tag = 0;
-    FmiShowThemeBar->OnClick = ToolBarVisibilityMenuClick;
-    FBarMenu->Items->Add(FmiShowThemeBar);
-
     FmiShowToolBar1 = new TMenuItem(FBarMenu);
     FmiShowToolBar1->Caption = L"\u5DE5\u5177\u680F 1"; // 工具栏 1
     FmiShowToolBar1->Tag = 1;
@@ -1853,7 +3505,6 @@ void __fastcall TForm1::ThemeBarContextPopup(TObject *Sender, const TPoint &Mous
 void __fastcall TForm1::ToolBarVisibilityMenuPopup(TObject *Sender)
 {
     // A check mark means the toolbar is currently visible.
-    if (FmiShowThemeBar)  FmiShowThemeBar->Checked  = tbrTheme->Visible;
     if (FmiShowToolBar1) FmiShowToolBar1->Checked = ToolBar1->Visible;
     if (FmiShowToolBar2) FmiShowToolBar2->Checked = ToolBar2->Visible;
     if (FmiShowToolBar3) FmiShowToolBar3->Checked = ToolBar3->Visible;
@@ -1870,7 +3521,6 @@ void __fastcall TForm1::ToolBarVisibilityMenuClick(TObject *Sender)
     // Tag is a small index, not a pointer (safe on 64-bit builds).
     switch (Item->Tag)
     {
-        case 0: tbrTheme->Visible = !tbrTheme->Visible; break;
         case 1: ToolBar1->Visible = !ToolBar1->Visible; break;
         case 2: ToolBar2->Visible = !ToolBar2->Visible; break;
 		case 3: ToolBar3->Visible = !ToolBar3->Visible; break;
@@ -1953,8 +3603,6 @@ void __fastcall TForm1::ApplyTheme(bool ADark)
 	// ---- Theme colour bar (below the menu bar) ----
 	cbrTheme->ParentBackground = false;
 	cbrTheme->Color = BarBg;
-	tbrTheme->ParentColor = false;
-	tbrTheme->Color = BarBg;
 	ToolBar1->ParentColor = false;
 	ToolBar1->Color = BarBg;
 	ToolBar2->ParentColor = false;
@@ -1976,6 +3624,8 @@ void __fastcall TForm1::ApplyTheme(bool ADark)
 	if (FSnapForm)
 		ApplySnapFormTheme(FSnapForm, ADark);
 	ApplyCreateDockControlsTheme(ADark);
+	if (g_AnimTimeline)
+		g_AnimTimeline->ApplyTheme(ADark);
 
 	// ---- Dock windows, zones, title strips, tabs ----
 	ApplyDockTheme();
@@ -1985,7 +3635,6 @@ void __fastcall TForm1::ApplyTheme(bool ADark)
 	tbrMenu->Invalidate();
 	tbrHelp->Invalidate();
 	cbrTheme->Invalidate();
-	tbrTheme->Invalidate();
 	ToolBar1->Invalidate();
 	ToolBar2->Invalidate();
 	ToolBar3->Invalidate();
@@ -2224,9 +3873,9 @@ void __fastcall TForm1::InitThemeBar()
 {
 	// Same rule as the menu bar: this row is coloured by our code, not by the .vsf style
 	cbrTheme->StyleName = "Platform Default";
-	// tbrTheme + ToolBar1..4 share the same setup (all of them sit in cbrTheme)
-	TToolBar *const Bars[] = { tbrTheme, ToolBar1, ToolBar2, ToolBar3, ToolBar4 };
-	for (int i = 0; i < 5; i++)
+	// ToolBar1..4 share the same setup (all of them sit in cbrTheme)
+	TToolBar *const Bars[] = { ToolBar1, ToolBar2, ToolBar3, ToolBar4 };
+	for (int i = 0; i < 4; i++)
 	{
 		Bars[i]->StyleName     = "Platform Default";
 		Bars[i]->StyleElements = TStyleElements() << seFont << seBorder;
@@ -2336,46 +3985,20 @@ void __fastcall TForm1::InitThemeBar()
 	ToolBar3->Left = ToolBar2->Left + ToolBar2->Width;	// ToolBar3 directly right of ToolBar2
 	ToolBar4->Left = ToolBar3->Left + ToolBar3->Width;	// ToolBar4 directly right of ToolBar3
 
-	tbrTheme->Images       = FThemeImages;
-	tbrTheme->ShowCaptions = false;
-	tbrTheme->ShowHint     = true;						// hints = colour names
-	tbrTheme->ButtonWidth  = THEME_SWATCH_BTN_W;
-	tbrTheme->ButtonHeight = 24;
-	tbrTheme->OnAdvancedCustomDraw       = ThemeBarAdvancedCustomDraw;
-	tbrTheme->OnAdvancedCustomDrawButton = ThemeBarAdvancedCustomDrawButton;
-
-	// A TToolButton that gets its Parent assigned is inserted at the LEFT of the existing ones,
-	// so create the buttons from the last to the first one to get them in preset order.
-	for (int i = THEME_PRESET_COUNT - 1; i >= 0; i--)
-	{
-		TToolButton *B = new TToolButton(tbrTheme);
-		B->Parent     = tbrTheme;
-		B->Style      = tbsButton;
-		B->ImageIndex = i;
-		B->Tag        = i;							// preset index
-		B->Hint       = THEME_PRESETS[i].Name;
-		B->OnClick    = ThemeSwatchClick;
-	}
-	LayoutThemeBar();
+	//LayoutThemeBar();
 	cbrTheme->Realign();
 }
 //---------------------------------------------------------------------------
-void __fastcall TForm1::LayoutThemeBar()
+/*void __fastcall TForm1::LayoutThemeBar()
 {
-	// The toolbar sits in a TControlBar band, so its Left / Top belong to the user (drag the gripper)
-	// and are never touched here - only the size is kept in sync with the buttons.
-	tbrTheme->Height = tbrTheme->ButtonHeight;
-	tbrTheme->Width  = THEME_PRESET_COUNT * THEME_SWATCH_BTN_W + 4;
-	// once the window exists, fit exactly to the last button (same idea as AlignHelpToolBar)
-	if (tbrTheme->HandleAllocated() && tbrTheme->ButtonCount > 0)
-		tbrTheme->Width = tbrTheme->Buttons[tbrTheme->ButtonCount - 1]->BoundsRect.Right;
-}
+	// the colour swatch toolbar (tbrTheme) was removed: nothing to size any more
+}*/
 // cbrTheme only holds its own toolbars. Everything else (dock windows, other controls)
 // is refused, otherwise dragging a dock panel over the bar docks it in there and breaks the layout.
 void __fastcall TForm1::ThemeBarGetSiteInfo(TObject *Sender, TControl *DockClient,
 	TRect &InfluenceRect, const TPoint &MousePos, bool &CanDock)
 {
-	CanDock = (DockClient == ToolBar1 || DockClient == ToolBar2 || DockClient == ToolBar3 || DockClient == ToolBar4 || DockClient == tbrTheme);
+	CanDock = (DockClient == ToolBar1 || DockClient == ToolBar2 || DockClient == ToolBar3 || DockClient == ToolBar4);
 }
 //---------------------------------------------------------------------------
 // Band insets inside cbrTheme: the space reserved around a toolbar for the gripper / frame.
@@ -2394,7 +4017,7 @@ void __fastcall TForm1::ThemeBarDockOver(TObject *Sender, TDragDockObject *Sourc
 	int X, int Y, TDragState State, bool &Accept)
 {
 	TControl *C = Source ? Source->Control : NULL;
-	Accept = (C == ToolBar1 || C == ToolBar2 || C == ToolBar3 || C == ToolBar4 || C == tbrTheme);
+	Accept = (C == ToolBar1 || C == ToolBar2 || C == ToolBar3 || C == ToolBar4);
 }
 //---------------------------------------------------------------------------
 //---------------------------------------------------------------------------
@@ -2561,8 +4184,9 @@ void __fastcall TForm1::MenuItemMeasureItem(TObject *Sender, TCanvas *ACanvas, i
 
 	String Cap = StringReplace(Item->Caption, "&", "", TReplaceFlags() << rfReplaceAll);
 	int W = 28 + ACanvas->TextWidth(Cap) + 16;		// left gutter + text + right padding
-	if (Item->ShortCut != 0)
-		W += 32 + ACanvas->TextWidth(ShortCutToText(Item->ShortCut));
+	String SCText = MenuShortcutText(Item);
+	if (!SCText.IsEmpty())
+		W += 32 + ACanvas->TextWidth(SCText);
 	if (Item->Count > 0)
 		W += 16;									// room for the sub-menu arrow
 
@@ -2603,6 +4227,8 @@ void __fastcall TForm1::MenuItemAdvancedDrawItem(TObject *Sender, TCanvas *ACanv
 	// This is asked every time the item is painted, so it never shows an old state.
 	bool ShowCheck = Item->Checked;
 	{
+		if (Item == g_DockMenuItems[4])
+			ShowCheck = DockFormReallyShown(FAnimForm);		// 动画
 		TForm *Forms[4] = { FExploreForm, FCreateForm, FPropsForm, FOutputForm };
 		for (int k = 0; k < 4; k++)
 			if (Item == g_DockMenuItems[k])		// dock window entry: ONLY the live window state decides
@@ -2651,11 +4277,11 @@ void __fastcall TForm1::MenuItemAdvancedDrawItem(TObject *Sender, TCanvas *ACanv
 	ACanvas->Brush->Style = bsClear;
 
 	// shortcut text, right aligned
-	if (Item->ShortCut != 0)
+	String SC = MenuShortcutText(Item);
+	if (!SC.IsEmpty())
 	{
 		TRect SR = R;
 		SR.Right = RightEdge;
-		String SC = ShortCutToText(Item->ShortCut);
 		ACanvas->Font->Color = Disabled ? P.Dim : P.Shortcut;
 		DrawText(ACanvas->Handle, SC.c_str(), -1, &SR, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 	}
@@ -2682,10 +4308,11 @@ void __fastcall TForm1::FormResize(TObject *Sender)
 void __fastcall TForm1::FormShow(TObject *Sender)
 {
 	AlignHelpToolBar();
-	LayoutThemeBar();
+	//LayoutThemeBar();
 	LayoutDockForms();		// build the start layout once (docking needs the main window to exist)
 	// Create command controls only after JvDocking has established the dock layout.
 	InitCommandLineControls(FOutputForm);
+	InitAnimTimeline(FAnimForm, FDark, FSdl, FSdl2, ViewportSelect);		// timeline drives the 3D objects; the property panel refreshes after each applied frame
 	// Create child HWNDs after JvDocking has finished the initial reparent/handle recreation.
 	if (!g_CreateDockControls && FCreateForm && FSdl)
 	{
@@ -2736,8 +4363,8 @@ class TLayoutLockHook : public TObject
 public:
 	TMessageEvent Prev;
 	bool          Locked;
-	TForm        *Forms[4];
-	__fastcall TLayoutLockHook() : Prev(NULL), Locked(false) { Forms[0] = Forms[1] = Forms[2] = Forms[3] = NULL; }
+	TForm        *Forms[5];
+	__fastcall TLayoutLockHook() : Prev(NULL), Locked(false) { Forms[0] = Forms[1] = Forms[2] = Forms[3] = Forms[4] = NULL; }
 	bool __fastcall IsChrome(HWND H)
 	{
 		TWinControl *C = FindControl(H);
@@ -2746,6 +4373,8 @@ public:
 		for (int i = 0; i < 4; i++)
 			if (C == Forms[i])
 				return true;					// a dock window itself (title strip / floating frame)
+		if (C == Forms[4])
+			return true;
 		return C->ClassName().Pos(L"TJvDock") == 1;	// zones, splitters, tab hosts, auto-hide strips
 	}
 	void __fastcall OnMsg(tagMSG &Msg, bool &Handled)
@@ -2790,7 +4419,6 @@ bool __fastcall TForm1::SaveLayoutFiles()
 		Ini->WriteInteger(L"Layout", L"MainTop",    Wp.rcNormalPosition.top);
 		Ini->WriteInteger(L"Layout", L"MainWidth",  Wp.rcNormalPosition.right - Wp.rcNormalPosition.left);
 		Ini->WriteInteger(L"Layout", L"MainHeight", Wp.rcNormalPosition.bottom - Wp.rcNormalPosition.top);
-		Ini->WriteBool(L"Layout", L"BarTheme", tbrTheme->Visible);
 		Ini->WriteBool(L"Layout", L"Bar1", ToolBar1->Visible);
 		Ini->WriteBool(L"Layout", L"Bar2", ToolBar2->Visible);
 		Ini->WriteBool(L"Layout", L"Bar3", ToolBar3->Visible);
@@ -2830,7 +4458,6 @@ bool __fastcall TForm1::LoadLayoutFiles()
 				WindowState = wsNormal;
 				SetBounds(L, T, W, H);
 			}
-			tbrTheme->Visible = Ini->ReadBool(L"Layout", L"BarTheme", tbrTheme->Visible);
 			ToolBar1->Visible = Ini->ReadBool(L"Layout", L"Bar1", ToolBar1->Visible);
 			ToolBar2->Visible = Ini->ReadBool(L"Layout", L"Bar2", ToolBar2->Visible);
 			ToolBar3->Visible = Ini->ReadBool(L"Layout", L"Bar3", ToolBar3->Visible);
@@ -2913,6 +4540,7 @@ void __fastcall TForm1::InitDockLayout()
 	FExploreForm = CreateDockForm(L"dockExplore", L"Explore", 220, 400);
 	FCreateForm  = CreateDockForm(L"dockCreate",  L"Create",  220, 200);
 	FPropsForm   = CreateDockForm(L"dockProps",   L"属性", 220, 200);	// "Properties"
+	FAnimForm    = CreateDockForm(L"dockAnim",    L"动画",  600, 200);	// 时间轴: 时间滑块 + 图层 (显示 / 冻结 / 锁定)
 	FOutputForm  = CreateDockForm(L"dockOutput",  L"命令",  600, 90);	// 命令历史 + 输入行，合并为一个窗口
 	// the file tree was designed on the main form (hidden): move it into its dock window
 	TreeView1->Parent  = FExploreForm;
@@ -2932,14 +4560,29 @@ void __fastcall TForm1::InitDockLayout()
 		Mi->Checked = false;		// the check mark is drawn by MenuItemAdvancedDrawItem from the live window state only
 		g_DockMenuItems[i] = Mi;
 		Mi->OnClick = DockWindowMenuClick;
+		Mi->ShortCut = ShortCut(static_cast<Word>(L'1' + i), TShiftState() << ssAlt);	// Alt+1 .. Alt+4
+		mnuView->Add(Mi);
+	}
+	{
+		// "动画" entry (5th dock window)
+		TMenuItem *Mi = new TMenuItem(this);
+		Mi->Caption = FAnimForm->Caption;
+		Mi->Tag     = 4;
+		Mi->Checked = false;
+		g_DockMenuItems[4] = Mi;
+		Mi->OnClick = DockWindowMenuClick;
+		Mi->ShortCut = ShortCut(static_cast<Word>(L'5'), TShiftState() << ssAlt);	// Alt+5
 		mnuView->Add(Mi);
 	}
 	// layout items: 保存布局 / 加载布局 / 锁定布局 (N7 / N8 come from the .dfm)
 	N7->OnClick = SaveLayoutClick;
 	N8->OnClick = LockLayoutClick;
+	N7->ShortCut = TextToShortCut(L"Ctrl+Alt+S");		// 保存布局
+	N8->ShortCut = TextToShortCut(L"Ctrl+Alt+K");		// 锁定布局
 	TMenuItem *Ld = new TMenuItem(this);
 	Ld->Caption = L"\u52A0\u8F7D\u5E03\u5C40";			// 加载布局
 	Ld->OnClick = LoadLayoutClick;
+	Ld->ShortCut = TextToShortCut(L"Ctrl+Alt+L");		// 加载布局
 	mnuView->Insert(mnuView->IndexOf(N7) + 1, Ld);
 	mnuView->OnClick = ViewMenuOpen;		// refresh the check marks each time the menu opens
 	HookMenuItems(mnuView);		// the menus are owner-drawn: attach the draw handlers to the new items too
@@ -2956,6 +4599,7 @@ void __fastcall TForm1::InitDockLayout()
 	g_LayoutHook->Forms[1] = FCreateForm;
 	g_LayoutHook->Forms[2] = FPropsForm;
 	g_LayoutHook->Forms[3] = FOutputForm;
+	g_LayoutHook->Forms[4] = FAnimForm;
 }
 //---------------------------------------------------------------------------
 // Is the dock window really on screen right now? Asked from Windows itself, not from VCL properties
@@ -3043,6 +4687,7 @@ void __fastcall TForm1::DockWindowMenuClick(TObject *Sender)
 		case 1: F = FCreateForm;  break;
 		case 2: F = FPropsForm;   break;
 		case 3: F = FOutputForm;  break;
+		case 4: F = FAnimForm;    break;
 	}
 	if (!F)
 		return;
@@ -3096,12 +4741,13 @@ void __fastcall TForm1::LayoutDockForms()
 	// size of a zone when it opens (ShowDockForm takes it from the dock panel itself)
 	FDockServer->LeftDockPanel->LRDockWidth    = 240;
 	FDockServer->RightDockPanel->LRDockWidth   = 260;
-	FDockServer->BottomDockPanel->TBDockHeight = 240;
+	FDockServer->BottomDockPanel->TBDockHeight = 300;
 
 	DockAndShow(FExploreForm, FDockServer->LeftDockPanel,   NULL,        alClient);
 	DockAndShow(FCreateForm,  FDockServer->RightDockPanel,  NULL,        alClient);
 	DockAndShow(FPropsForm,   FDockServer->RightDockPanel,  FCreateForm, alBottom);		// stacked under "Create"
-	DockAndShow(FOutputForm,  FDockServer->BottomDockPanel, NULL,        alClient);	// 命令栏：历史 + 输入行
+	DockAndShow(FAnimForm,    FDockServer->BottomDockPanel, NULL,        alClient);		// 动画: time line at the bottom
+	DockAndShow(FOutputForm,  FDockServer->BottomDockPanel, FAnimForm,   alBottom);		// 命令栏 under it	// 命令栏：历史 + 输入行
 	// docking re-created the window handles of the children: set the dark scroll bars again
 	DockFormShown(NULL);
 }
@@ -3588,6 +5234,12 @@ void __fastcall TForm1::ApplyDockTheme()
 	const TColor TxtOff = D ? clWhite            : Rgb(60, 60, 60);		// inactive text: white on dark
 
 	// the dock windows themselves (the VCL style must not override Color)
+	if (FAnimForm)
+	{
+		FAnimForm->StyleElements = TStyleElements();
+		FAnimForm->Color         = Body;
+		FAnimForm->Font->Color   = TxtOn;
+	}
 	TForm *DockForms[4] = { FExploreForm, FCreateForm, FPropsForm, FOutputForm };
 	for (int i = 0; i < 4; i++)
 	{
@@ -3692,6 +5344,26 @@ void __fastcall TForm1::FormCreate(TObject *Sender)
 	tbrMenu->StyleElements    = TStyleElements() << seFont << seBorder;
 	tbrHelp->StyleElements    = TStyleElements() << seFont << seBorder;
 
+	// ---- shortcuts shown in the menus ----
+	// Real shortcuts (work and are drawn): items that have a working handler.
+	N9->ShortCut    = ShortCut(VK_OEM_COMMA, TShiftState() << ssCtrl);	// 首选项 Ctrl+,
+	About->ShortCut = TextToShortCut(L"Ctrl+F1");						// 关于
+	// Undo1 (Ctrl+Z), Redo1 (Ctrl+Y), 新建/打开/保存/另存为 (Ctrl+N/O/S/Shift+S, see AttachMenu) are already real.
+	// Display-only (see MenuShortcutText): the key stays free for the focused control / is not wired yet.
+	g_MenuShortcutText[N4]  = L"Ctrl+X";			// 剪切
+	g_MenuShortcutText[N5]  = L"Ctrl+C";			// 复制
+	g_MenuShortcutText[N6]  = L"Ctrl+V";			// 粘贴
+	g_MenuShortcutText[N13] = L"Del";				// 删除
+	g_MenuShortcutText[E1]  = L"Alt+F4";			// 退出
+	g_MenuShortcutText[N2D1] = L"Ctrl+Alt+2";		// 2D场景
+	g_MenuShortcutText[N3D1] = L"Ctrl+Alt+3";		// 3D场景
+	g_MenuShortcutText[N19] = L"Ctrl+Shift+B";		// 方块
+	g_MenuShortcutText[N20] = L"Ctrl+Shift+P";		// 平面
+	g_MenuShortcutText[N21] = L"Ctrl+Shift+A";		// 动画
+	// (Cut / Copy / Paste / Delete stay display-only: their keys are handled by the focused control, the menu does the same)
+	g_MenuShortcutText[OnLine]     = L"F1";			// 在线
+	g_MenuShortcutText[develop1]   = L"F12";		// Developer
+
 	// Owner-draw the drop-down menus so they can follow the theme
 	MainMenu1->OwnerDraw = true;
 	MainMenu2->OwnerDraw = true;
@@ -3762,6 +5434,31 @@ void __fastcall TForm1::FormCreate(TObject *Sender)
 	LinkTimer->OnTimer  = SceneLinkTick;
 	InitPropertyPanel();
 	InitFileTree();
+
+	// ---- menu commands: 导入 / 导出, Edit, Player ----
+	g_ProjectFile->SetView3D(FSdl);
+	g_SceneCmd = new TSceneCommands(this, FSdl, FSdl2, Undo1, Redo1, ShutDown1);
+	g_ProjectFile->OnProjectReplaced = g_SceneCmd->ProjectReplaced;
+	N16->OnClick = g_ProjectFile->ImportFile;
+	N17->OnClick = g_ProjectFile->ExportFile;
+	Undo1->OnClick = g_SceneCmd->Undo;
+	Redo1->OnClick = g_SceneCmd->Redo;
+	N4->OnClick  = g_SceneCmd->Cut;
+	N5->OnClick  = g_SceneCmd->Copy;
+	N6->OnClick  = g_SceneCmd->Paste;
+	N13->OnClick = g_SceneCmd->Delete;
+	RunProject->OnClick = RunClick;				// the "运行" toolbar button: the animation starts from the beginning
+	RunScene1->OnClick  = StartClick;			// the "开始" toolbar button
+	Restart1->OnClick   = g_SceneCmd->Restart;
+	Refresh1->OnClick   = g_SceneCmd->Refresh;
+	ShutDown1->OnClick  = g_SceneCmd->Shutdown;
+	N16->ShortCut        = ShortCut(L'I', TShiftState() << ssCtrl);
+	N17->ShortCut        = ShortCut(L'E', TShiftState() << ssCtrl);
+	RunProject->ShortCut = ShortCut(VK_RETURN, TShiftState() << ssCtrl);
+	RunScene1->ShortCut  = ShortCut(VK_RETURN, TShiftState() << ssCtrl << ssShift);
+	Restart1->ShortCut   = ShortCut(VK_F5, TShiftState() << ssCtrl << ssShift);
+	Refresh1->ShortCut   = ShortCut(VK_F5, TShiftState());
+	ShutDown1->ShortCut  = ShortCut(VK_F5, TShiftState() << ssShift);
 
 	// Start with the dark theme (the Dark/Light button in the title bar toggles it)
 	ApplyTheme(true);
@@ -4515,3 +6212,4 @@ void __fastcall TForm1::ModeBarAdvancedCustomDrawButton(TToolBar *Sender, TToolB
 	DefaultDraw = false;		// drawn here
 }
 //---------------------------------------------------------------------------
+

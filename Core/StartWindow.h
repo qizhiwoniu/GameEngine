@@ -27,7 +27,7 @@
 class TRunView2 : public TSDLPanel
 {
 private:
-	struct TFace { SDL_FPoint P[4]; float Depth; int Layer; float R, G, B; };
+	struct TFace { SDL_FPoint P[10]; bool Edge[10]; int N; float Depth; int Layer; float R, G, B; };	// Edge[k]: P[k] -> P[k+1] is a real edge of the face (not the cut at the near plane)
 
 	TViewport2D *FGraph;
 	ULONGLONG    FStart, FLast;
@@ -126,6 +126,80 @@ private:
 		SDL_RenderLine(R, p.x, p.y, q.x, q.y);
 	}
 
+	// Quad in view space cut at the near plane z = Near (Sutherland-Hodgman). A face that is only partly behind the camera
+	// keeps its visible part, it is no longer dropped as a whole (the big ground plane used to vanish when one of its
+	// corners got behind the camera, e.g. when the camera follows a box to the edge of the ground).
+	// Returns the number of corners (0 .. 6). CE[k]: the edge from corner k to k+1 belongs to the original quad.
+	static int ClipNear(const float VW[4][3], float Near, float CV[6][3], bool CE[6])
+	{
+		int n = 0;
+		for (int i = 0; i < 4; i++)
+		{
+			const float *a = VW[i];
+			const float *b = VW[(i + 1) & 3];
+			const bool ain = a[2] >= Near, bin = b[2] >= Near;
+			if (ain)
+			{
+				CV[n][0] = a[0]; CV[n][1] = a[1]; CV[n][2] = a[2];
+				CE[n] = true;
+				n++;
+			}
+			if (ain != bin)
+			{
+				const float t = (Near - a[2]) / (b[2] - a[2]);
+				CV[n][0] = a[0] + (b[0] - a[0]) * t;
+				CV[n][1] = a[1] + (b[1] - a[1]) * t;
+				CV[n][2] = Near;
+				CE[n] = !ain;			// entry point: the next edge is original again; exit point: the next edge is the cut
+				n++;
+			}
+		}
+		return n;
+	}
+
+	// The same cut in screen space, against one side of a rectangle: Side 0: x >= Lim, 1: x <= Lim, 2: y >= Lim, 3: y <= Lim.
+	// Used with a guard band around the window: the part of the near-plane cut that lies far outside the window has
+	// corners tens of thousands of pixels away, and not every SDL renderer draws triangles that large correctly.
+	// A flat colour polygon stays exact when it is cut after the projection.
+	static bool SideInside(const SDL_FPoint &p, int Side, float Lim)
+	{
+		switch (Side)
+		{
+			case 0:  return p.x >= Lim;
+			case 1:  return p.x <= Lim;
+			case 2:  return p.y >= Lim;
+			default: return p.y <= Lim;
+		}
+	}
+	static int ClipSide(const SDL_FPoint *In, const bool *InE, int n, int Side, float Lim, SDL_FPoint *Out, bool *OutE)
+	{
+		int m = 0;
+		for (int i = 0; i < n && m < 14; i++)
+		{
+			const SDL_FPoint &a = In[i];
+			const SDL_FPoint &b = In[(i + 1) % n];
+			const bool ain = SideInside(a, Side, Lim), bin = SideInside(b, Side, Lim);
+			if (ain)
+			{
+				Out[m] = a;
+				OutE[m] = InE[i];
+				m++;
+			}
+			if (ain != bin)
+			{
+				const float t = (Side < 2) ? (Lim - a.x) / (b.x - a.x) : (Lim - a.y) / (b.y - a.y);
+				SDL_FPoint r;
+				r.x = a.x + (b.x - a.x) * t;
+				r.y = a.y + (b.y - a.y) * t;
+				if (Side < 2) r.x = Lim; else r.y = Lim;
+				Out[m] = r;
+				OutE[m] = ain ? false : InE[i];		// exit point: the next edge is the cut; entry point: the original edge goes on
+				m++;
+			}
+		}
+		return m;
+	}
+
 	// ---- scene -> faces -------------------------------------------------
 	void AddFace(const float W[4][3], float nx, float ny, float nz, const TRunObj &O, int Layer, bool Cull)
 	{
@@ -138,16 +212,36 @@ private:
 
 		TFace F;
 		const float Near = 0.3f;
-		float depthSum = 0;
+		float VW[4][3], CV[6][3];
+		bool  CE[6];
 		for (int i = 0; i < 4; i++)
+			ToView(W[i][0], W[i][1], W[i][2], VW[i][0], VW[i][1], VW[i][2]);
+		const int n = ClipNear(VW, Near, CV, CE);
+		if (n < 3) return;											// completely behind the camera
+		float depthSum = 0;
+		SDL_FPoint S1[16], S2[16];
+		bool       E1[16], E2[16];
+		for (int i = 0; i < n; i++)
 		{
-			float vx, vy, vz;
-			ToView(W[i][0], W[i][1], W[i][2], vx, vy, vz);
-			if (vz < Near) return;									// (no polygon clipping: skip faces behind the camera)
-			F.P[i] = Project(vx, vy, vz);
-			depthSum += vz;
+			S1[i] = Project(CV[i][0], CV[i][1], CV[i][2]);
+			E1[i] = CE[i];
+			depthSum += CV[i][2];
 		}
-		F.Depth = depthSum * 0.25f;
+		F.Depth = depthSum / n;
+		// guard band: 1024 px around the window (everything outside the window is invisible anyway)
+		const float G = 1024.0f;
+		int m = n;
+		m = ClipSide(S1, E1, m, 0, -G,                     S2, E2); if (m < 3) return;
+		m = ClipSide(S2, E2, m, 1, ClientWidth  + G,       S1, E1); if (m < 3) return;
+		m = ClipSide(S1, E1, m, 2, -G,                     S2, E2); if (m < 3) return;
+		m = ClipSide(S2, E2, m, 3, ClientHeight + G,       S1, E1); if (m < 3) return;
+		if (m > 10) return;
+		for (int i = 0; i < m; i++)
+		{
+			F.P[i]    = S1[i];
+			F.Edge[i] = E1[i];
+		}
+		F.N = m;
 		F.Layer = Layer;
 		float lx = 0.45f, ly = 0.85f, lz = 0.55f;					// light direction
 		Norm(lx, ly, lz);
@@ -279,16 +373,24 @@ private:
 		{
 			const TFace &Fc = FFaces[i];
 			SDL_FColor col = { Fc.R, Fc.G, Fc.B, 1.0f };
-			SDL_Vertex V[4];
-			for (int k = 0; k < 4; k++)
+			SDL_Vertex V[10];
+			for (int k = 0; k < Fc.N; k++)
 			{
 				V[k].position = Fc.P[k]; V[k].color = col; V[k].tex_coord.x = 0; V[k].tex_coord.y = 0;
 			}
-			static const int Idx[6] = { 0, 1, 2, 0, 2, 3 };
-			SDL_RenderGeometry(R, NULL, V, 4, Idx, 6);
-			SDL_FPoint Q[5] = { Fc.P[0], Fc.P[1], Fc.P[2], Fc.P[3], Fc.P[0] };
+			int Idx[24], NIdx = 0;										// triangle fan (3 .. 10 corners)
+			for (int k = 1; k + 1 < Fc.N; k++)
+			{
+				Idx[NIdx++] = 0; Idx[NIdx++] = k; Idx[NIdx++] = k + 1;
+			}
+			SDL_RenderGeometry(R, NULL, V, Fc.N, Idx, NIdx);
 			SDL_SetRenderDrawColor(R, (Uint8)(Fc.R * 120), (Uint8)(Fc.G * 120), (Uint8)(Fc.B * 120), 255);
-			SDL_RenderLines(R, Q, 5);
+			for (int k = 0; k < Fc.N; k++)								// outline: real edges only, not the cut at the near plane
+			{
+				if (!Fc.Edge[k]) continue;
+				const SDL_FPoint &p = Fc.P[k], &q = Fc.P[(k + 1) % Fc.N];
+				SDL_RenderLine(R, p.x, p.y, q.x, q.y);
+			}
 		}
 
 		// ---- HUD: 时间、物体数量、FPS ----
@@ -396,14 +498,48 @@ public:
 	}
 };
 //---------------------------------------------------------------------------
+// The window is created once and reused (closing it only hides it). These helpers let the Player menu of the main form
+// look at it / restart it / close it without owning it.
+struct StartWindowState { TForm *F; TRunView2 *V; };
+inline StartWindowState &StartWindowStateRef()
+{
+	static StartWindowState S = { NULL, NULL };
+	return S;
+}
+inline bool StartWindowIsOpen()
+{
+	StartWindowState &S = StartWindowStateRef();
+	return S.F && S.F->Visible;
+}
+// the animation of an open window starts again from the beginning (false = the window is not open)
+inline bool RestartStartWindow()
+{
+	StartWindowState &S = StartWindowStateRef();
+	if (!S.F || !S.V || !S.F->Visible) return false;
+	S.V->Restart();
+	return true;
+}
+inline bool CloseStartWindow()
+{
+	StartWindowState &S = StartWindowStateRef();
+	if (!S.F || !S.F->Visible) return false;
+	S.F->Close();		// OnClose = caHide: the window is kept for the next time
+	return true;
+}
+inline void RefreshStartWindow()
+{
+	StartWindowState &S = StartWindowStateRef();
+	if (S.V && S.F && S.F->Visible) S.V->Invalidate();
+}
 // Opens (or brings to front) the render window for the given node graph.
 //   ARestart = true  -> the animation starts again from the beginning ("Run" button)
 //   ARestart = false -> keeps running if the window is already open ("Start" button)
 // A window that was closed / hidden always starts from the beginning.
 inline void ShowStartWindow(TComponent *Owner, TViewport2D *Graph, bool ARestart = true)
 {
-	static TForm    *F = NULL;
-	static TRunView2 *V = NULL;
+	StartWindowState &S = StartWindowStateRef();
+	TForm *&F = S.F;
+	TRunView2 *&V = S.V;
 	if (!F)
 	{
 		F = new TForm(Owner, 1);				// CreateNew: this form has no .dfm resource

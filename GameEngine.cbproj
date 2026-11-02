@@ -7,7 +7,7 @@
         <AppType>Application</AppType>
         <Base>True</Base>
         <Config Condition="'$(Config)'==''">Debug</Config>
-        <Platform Condition="'$(Platform)'==''">Win64x</Platform>
+        <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <ProjectName Condition="'$(ProjectName)'==''">GameEngine</ProjectName>
         <TargetedPlatforms>1048579</TargetedPlatforms>
     </PropertyGroup>
@@ -117,10 +117,12 @@
         <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;$(DCC_Namespace)</DCC_Namespace>
         <BT_BuildType>Debug</BT_BuildType>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
-        <VerInfo_Keys>CompanyName=;FileDescription=$(MSBuildProjectName);FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProgramID=com.embarcadero.$(MSBuildProjectName);ProductName=$(MSBuildProjectName);ProductVersion=1.0.0.0;Comments=</VerInfo_Keys>
         <VerInfo_Locale>1033</VerInfo_Locale>
         <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
+        <AppDPIAwarenessMode>none</AppDPIAwarenessMode>
         <BCC_PCHName_Clang>GameEnginePCH1.h</BCC_PCHName_Clang>
+        <BCC_IncludePath>$(BDSPROJECTSDIR)\SDL3-3.4.18\x86_64-w64-mingw32\include;$(BCC_IncludePath)</BCC_IncludePath>
+        <ILINK_LibraryPath>D:\Embarcadero\Embarcadero\Studio\Projects\SDL3-3.4.18\x86_64-w64-mingw32\lib\;$(ILINK_LibraryPath)</ILINK_LibraryPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win64x)'!=''">
         <PackageImports>adortl;bindcomp;bindcompdbx;bindcompfmx;bindcompvcl;bindcompvclsmp;bindcompvclwinx;bindengine;CloudService;CustomIPTransport;DataSnapClient;DataSnapCommon;DataSnapConnectors;DatasnapConnectorsFreePascal;DataSnapFireDAC;DataSnapIndy10ServerTransport;DataSnapNativeClient;DataSnapProviderClient;DataSnapServer;DataSnapServerMidas;dbexpress;dbrtl;dbxcds;DbxClientDriver;DbxCommonDriver;DBXDb2Driver;DBXFirebirdDriver;DBXInformixDriver;DBXInterBaseDriver;DBXMSSQLDriver;DBXMySQLDriver;DBXOdbcDriver;DBXOracleDriver;DBXSqliteDriver;DBXSybaseASADriver;DBXSybaseASEDriver;dsnap;dsnapcon;dsnapxml;emsclient;emsclientfiredac;emsedge;emshosting;emsserverresource;FireDAC;FireDACADSDriver;FireDACASADriver;FireDACCommon;FireDACCommonDriver;FireDACCommonODBC;FireDACDb2Driver;FireDACDBXDriver;FireDACDSDriver;FireDACIBDriver;FireDACInfxDriver;FireDACMongoDBDriver;FireDACMSAccDriver;FireDACMSSQLDriver;FireDACMySQLDriver;FireDACODBCDriver;FireDACOracleDriver;FireDACPgDriver;FireDACSqliteDriver;FireDACTDataDriver;fmx;fmxase;fmxdae;fmxFireDAC;fmxobj;IndyCore;IndyIPClient;IndyIPCommon;IndyIPServer;IndyProtocols;IndySystem;inet;inetdb;inetdbxpress;inetstn;RESTBackendComponents;RESTComponents;rtl;Skia;soapmidas;soaprtl;soapserver;tethering;vcl;vclactnband;vcldb;vcldsnap;vcledge;vclFireDAC;vclie;vclimg;VCLRESTComponents;VclSmp;vcltouch;vclwinx;vclx;xmlrtl;$(PackageImports)</PackageImports>
@@ -166,6 +168,9 @@
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_1_Win64)'!=''">
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
+        <LinkPackageImports>rtl.bpi;vcl.bpi;vclx.bpi;xmlrtl.bpi;vclwinx.bpi;vclimg.bpi;bindengine.bpi;vclactnband.bpi;JvDocking.bpi;Jcl.bpi;JvCore.bpi;dbrtl.bpi;JclVcl.bpi</LinkPackageImports>
+        <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
+        <VerInfo_Locale>1033</VerInfo_Locale>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_1_Win64x)'!=''">
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
@@ -176,7 +181,9 @@
         <Icon_MainIcon>Image\icon.ico</Icon_MainIcon>
         <UWP_CppLogo44>Image\icon.ico</UWP_CppLogo44>
         <UWP_CppLogo150>Image\icon.ico</UWP_CppLogo150>
-        <LinkPackageImports>rtl.bpi;vcl.bpi;vclx.bpi;xmlrtl.bpi;vclwinx.bpi;vclimg.bpi;bindengine.bpi;vclactnband.bpi;JvDocking.bpi;Jcl.bpi;JvCore.bpi;dbrtl.bpi;JclVcl.bpi</LinkPackageImports>
+        <UsePackages>false</UsePackages>
+        <LinkPackageStatics>rtl.lib;vcl.lib;vclx.lib;xmlrtl.lib;vclwinx.lib;vclimg.lib;bindengine.lib;vclactnband.lib;JvDocking.lib;Jcl.lib;JvCore.lib;dbrtl.lib;JclVcl.lib</LinkPackageStatics>
+        <DCC_UnitSearchPath>D:\Embarcadero\Embarcadero\Studio\Projects\jvcl\run;D:\Embarcadero\Embarcadero\Studio\Projects\jvcl\lib\d37\win64;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2)'!=''">
         <Defines>NDEBUG;$(Defines)</Defines>
@@ -193,19 +200,15 @@
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
     </PropertyGroup>
     <ItemGroup>
-        <LibFiles Include="..\..\SDL3-3.4.18\x86_64-w64-mingw32\lib\libSDL3.dll.a" Condition="'$(Platform)'=='Win64x'">
-            <BuildOrder>6</BuildOrder>
-            <IgnorePath>true</IgnorePath>
-        </LibFiles>
-        <None Include="..\Core\SDLPanel.h">
-            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
-            <BuildOrder>13</BuildOrder>
-        </None>
         <None Include="Core\RunWindow.h">
             <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
             <BuildOrder>15</BuildOrder>
         </None>
         <None Include="Core\SceneLink.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>17</BuildOrder>
+        </None>
+        <None Include="Core\SDLPanel.h">
             <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
             <BuildOrder>17</BuildOrder>
         </None>
@@ -363,8 +366,20 @@
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="..\..\Win64x\Debug\SDL3.dll" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\Win64x\Debug\SDL3.dll" Configuration="Debug" Class="ProjectFile">
                     <Platform Name="Win64x">
                         <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName=".\Win64\Debug\GameEngine.exe" Configuration="Debug" Class="ProjectOutput">
+                    <Platform Name="Win64">
+                        <RemoteName>GameEngine.exe</RemoteName>
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
@@ -374,14 +389,20 @@
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
-                <DeployFile LocalName=".\Win64x\Debug\GameEngine.pdb" Configuration="Debug" Class="DebugSymbols">
-                    <Platform Name="Win64x">
-                        <RemoteName>GameEngine.pdb</RemoteName>
+                <DeployFile LocalName="Image\icon.ico" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="Image\icon.ico" Configuration="Debug" Class="ProjectFile">
                     <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="Image\play96x96.ico" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64">
                         <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
                     </Platform>
@@ -393,7 +414,19 @@
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="Image\play96x96.png" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="Image\play96x96.png" Configuration="Debug" Class="ProjectFile">
                     <Platform Name="Win64x">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="README.MD" Configuration="Debug" Class="ProjectFile">
+                    <Platform Name="Win64">
                         <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>
                     </Platform>

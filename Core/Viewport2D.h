@@ -50,6 +50,25 @@
 #include <math.h>
 #include <stdio.h>
 //---------------------------------------------------------------------------
+// Fingerprint of a project state (FNV-1a, 64 bit). Form1 uses it to notice that the project changed (undo / redo,
+// "save changes?"). Numbers are rounded to 1/10000, so float noise below that is not a change.
+struct TStateHash
+{
+	unsigned long long H;
+	TStateHash() : H(1469598103934665603ULL) {}
+	void Byte(unsigned char b) { H ^= b; H *= 1099511628211ULL; }
+	void Int(long long v) { for (int i = 0; i < 8; i++) Byte((unsigned char)(v >> (8 * i))); }
+	void Flt(float v)
+	{
+		double d = (double)v;
+		if (d != d) { Int(0x7FFFFFFFLL); return; }			// NaN
+		if (d >  1.0e9) d =  1.0e9;
+		if (d < -1.0e9) d = -1.0e9;
+		Int((long long)floor(d * 10000.0 + 0.5));
+	}
+	void Str(const String &S) { Int(S.Length()); for (int i = 1; i <= S.Length(); i++) Int((long long)S[i]); }
+};
+//---------------------------------------------------------------------------
 // Node kinds and their pins
 //---------------------------------------------------------------------------
 enum { nkBox, nkPlane, nkTime, nkKey, nkAccum, nkSub, nkValue, nkGravity, nkAdd, nkOutput, nkKeys,nkMouse,nkCamera, NK_COUNT };
@@ -2011,10 +2030,82 @@ public:
 
 	int NodeCount() { return (int)FNodes.size(); }
 
+	// Records of the file that this class does not interpret: the "动画" window keeps its key frames in them
+	//   anim    start end fps loop
+	//   alayer  nodeId visible frozen locked
+	//   akey    nodeId frame  px py pz  rx ry rz  sx sy sz         (rotation in radians, size = edge lengths)
+	// Open keeps these lines here (the form hands them to the timeline), Save writes whatever is in here
+	// (the form fills it from the timeline first). Files without them (older versions) open as before.
+	std::vector<String> ExtraLines;
+
+	// ---- undo / redo / import (used by Form1) -------------------------------------------------------
+	// Everything the graph consists of, including the link to the 3D objects (Obj) and the selection flags.
+	struct TGraphState
+	{
+		std::vector<TNode>  Nodes;
+		std::vector<TLink>  Links;
+		std::vector<TGroup> Groups;
+		int   NextId, NextGroup, GroupCounter;
+		int   Counter[NK_COUNT];
+		float Zoom, PanX, PanY;
+	};
+
+	void GetState(TGraphState &S) const
+	{
+		S.Nodes = FNodes; S.Links = FLinks; S.Groups = FGroups;
+		S.NextId = FNextId; S.NextGroup = FNextGroup; S.GroupCounter = FGroupCounter;
+		for (int k = 0; k < NK_COUNT; k++) S.Counter[k] = FCounter[k];
+		S.Zoom = FZoom; S.PanX = FPanX; S.PanY = FPanY;
+	}
+
+	// KeepView: the zoom / pan of the window stay as they are. ExactIds: the id counters are set to the saved values;
+	// otherwise they never go back (an id that was used once is not handed out again, so redo can not collide).
+	void SetState(const TGraphState &S, bool KeepView, bool ExactIds = false)
+	{
+		FNodes = S.Nodes; FLinks = S.Links; FGroups = S.Groups;
+		if (ExactIds) { FNextId = S.NextId; FNextGroup = S.NextGroup; }
+		else          { FNextId = std::max(FNextId, S.NextId); FNextGroup = std::max(FNextGroup, S.NextGroup); }
+		FGroupCounter = S.GroupCounter;
+		for (int k = 0; k < NK_COUNT; k++) FCounter[k] = S.Counter[k];
+		if (!KeepView) { FZoom = S.Zoom; FPanX = S.PanX; FPanY = S.PanY; }
+		FDrag = dgNone; FClickNode = 0; FMenuNode = 0; FMenuGroup = 0;
+		Invalidate();
+	}
+
+	// fingerprint of the project part of the graph (not the selection, not the view)
+	void GraphHash(TStateHash &H) const
+	{
+		H.Int((long long)FNodes.size());
+		for (size_t i = 0; i < FNodes.size(); i++)
+		{
+			const TNode &N = FNodes[i];
+			H.Int(N.Id); H.Int(N.Kind); H.Str(N.Name); H.Flt(N.X); H.Flt(N.Y);
+			H.Int(N.Group); H.Int(N.Obj); H.Int(N.Collapsed ? 1 : 0); H.Int(N.HasVal ? 1 : 0);
+			for (int k = 0; k < 5; k++) H.Flt(N.Val[k]);
+		}
+		H.Int((long long)FLinks.size());
+		for (size_t i = 0; i < FLinks.size(); i++)
+		{
+			H.Int(FLinks[i].From); H.Int(FLinks[i].FromPin); H.Int(FLinks[i].To); H.Int(FLinks[i].ToPin);
+		}
+		H.Int((long long)FGroups.size());
+		for (size_t i = 0; i < FGroups.size(); i++)
+		{
+			H.Int(FGroups[i].Id); H.Str(FGroups[i].Name); H.Int(FGroups[i].Collapsed ? 1 : 0);
+		}
+	}
+
+	// the Edit menu: the same operations as the keys of this window (Delete / Ctrl+C / Ctrl+V)
+	int  SelectedNodeCount() const { int n = 0; for (size_t i = 0; i < FNodes.size(); i++) if (FNodes[i].Sel) n++; return n; }
+	void DeleteSelectedNodes() { DeleteSelected(); }
+	void CopySelectedNodes()   { CopySelected(); }
+	void PasteNodesAtCenter()  { PasteAt(WX(ClientWidth * 0.5f), WY(ClientHeight * 0.5f)); }
+
 	// empty graph, default view ("New")
 	void ClearGraph()
 	{
 		FNodes.clear(); FLinks.clear(); FGroups.clear();
+		ExtraLines.clear();
 		FNextId = 1; FNextGroup = 1; FGroupCounter = 0;
 		for (int k = 0; k < NK_COUNT; k++) FCounter[k] = 0;
 		FZoom = 1.0f; FPanX = FPanY = 0.0f;
@@ -2105,6 +2196,8 @@ public:
 			for (size_t i = 0; i < FLinks.size(); i++)
 				L->Add(L"link\t" + IntToStr(FLinks[i].From) + L"\t" + IntToStr(FLinks[i].FromPin) + L"\t" +
 					   IntToStr(FLinks[i].To) + L"\t" + IntToStr(FLinks[i].ToPin));
+			for (size_t i = 0; i < ExtraLines.size(); i++)
+				L->Add(ExtraLines[i]);
 			L->SaveToFile(Path, TEncoding::UTF8);
 			return true;
 		}
@@ -2126,6 +2219,7 @@ public:
 		for (int k = 0; k < NK_COUNT; k++) counters[k] = 0;
 		float zoom = 1.0f, panX = 0.0f, panY = 0.0f;
 		int skipped = 0;
+		std::vector<String> Extra;				// "anim" records, see ExtraLines
 		try
 		{
 			std::unique_ptr<TStringList> L(new TStringList);
@@ -2188,6 +2282,8 @@ public:
 					K.To   = StrToIntDef(F[3], 0); K.ToPin   = StrToIntDef(F[4], -1);
 					Links.push_back(K);
 				}
+				else if (T == L"anim" || T == L"alayer" || T == L"akey")
+					Extra.push_back(L->Strings[i]);			// animation: interpreted by the timeline, not here
 			}
 		}
 		catch (Exception &E)
@@ -2198,6 +2294,7 @@ public:
 
 		// ---- commit ----
 		ClearGraph();
+		ExtraLines = Extra;
 		FGroups = Groups;
 		FNodes  = Nodes;
 		int maxId = 0, maxGroup = 0;
@@ -2239,6 +2336,102 @@ public:
 		ClearSel();
 		if (skipped > 0) Err = L"\u6709 " + IntToStr(skipped) + L" \u9879\u5185\u5BB9\u65E0\u6CD5\u8BC6\u522B\uFF0C\u5DF2\u8DF3\u8FC7";		// warning only: the file was opened
 		else Err = L"";
+		return true;
+	}
+
+	// "Import": the nodes / links / groups of another .yu file are added to this graph (new ids, placed below the existing
+	// nodes and selected); their 3D objects are created by SceneLink. AnimOut gets the animation records of the file with the
+	// node ids translated. false = the file can not be read, the graph stays untouched. Err = warning (something was skipped).
+	bool ImportFromFile(const String &Path, String &Err, std::vector<String> *AnimOut = NULL, int *Added = NULL)
+	{
+		TGraphState Keep;
+		GetState(Keep);
+		std::vector<String> KeepExtra = ExtraLines;
+		String E;
+		if (!LoadFromFile(Path, E))			// replaces the graph; a file that can not be read leaves it untouched
+		{
+			Err = E;
+			return false;
+		}
+		TGraphState In;
+		GetState(In);
+		std::vector<String> InExtra = ExtraLines;
+		SetState(Keep, false, true);		// back to the project, then merge
+		ExtraLines = KeepExtra;
+
+		float minx = 0.0f, bottom = -300.0f, inMinX = 0.0f, inMinY = 0.0f;
+		if (!FNodes.empty())
+		{
+			minx = FNodes[0].X; bottom = FNodes[0].Y + NodeHN(FNodes[0]);
+			for (size_t i = 1; i < FNodes.size(); i++)
+			{
+				minx = std::min(minx, FNodes[i].X);
+				bottom = std::max(bottom, FNodes[i].Y + NodeHN(FNodes[i]));
+			}
+		}
+		if (!In.Nodes.empty())
+		{
+			inMinX = In.Nodes[0].X; inMinY = In.Nodes[0].Y;
+			for (size_t i = 1; i < In.Nodes.size(); i++)
+			{
+				inMinX = std::min(inMinX, In.Nodes[i].X);
+				inMinY = std::min(inMinY, In.Nodes[i].Y);
+			}
+		}
+		const float dx = minx - inMinX;
+		const float dy = FNodes.empty() ? 0.0f : (bottom + 60.0f) - inMinY;
+
+		ClearSel();
+		std::map<int, int> IdMap, GroupMap;
+		for (size_t i = 0; i < In.Groups.size(); i++)
+		{
+			TGroup G = In.Groups[i];
+			int Old = G.Id;
+			G.Id = FNextGroup++;
+			GroupMap[Old] = G.Id;
+			FGroups.push_back(G);
+		}
+		for (size_t i = 0; i < In.Nodes.size(); i++)
+		{
+			TNode N = In.Nodes[i];
+			int Old = N.Id;
+			N.Id    = FNextId++;
+			N.Group = (N.Group != 0 && GroupMap.count(N.Group)) ? GroupMap[N.Group] : 0;
+			N.X += dx; N.Y += dy;
+			N.Obj = 0;					// a new 3D object is created for it
+			N.Sel = true;
+			IdMap[Old] = N.Id;
+			FNodes.push_back(N);
+		}
+		for (size_t i = 0; i < In.Links.size(); i++)
+		{
+			TLink L = In.Links[i];
+			if (!IdMap.count(L.From) || !IdMap.count(L.To)) continue;
+			L.From = IdMap[L.From]; L.To = IdMap[L.To];
+			FLinks.push_back(L);
+		}
+		for (int k = 0; k < NK_COUNT; k++) FCounter[k] = std::max(FCounter[k], In.Counter[k]);
+		CleanGroups();
+
+		if (AnimOut)
+		{
+			AnimOut->clear();
+			std::vector<String> F;
+			for (size_t i = 0; i < InExtra.size(); i++)
+			{
+				YuSplit(InExtra[i], F);
+				if (F.size() < 2 || (F[0] != L"alayer" && F[0] != L"akey")) continue;		// "anim" (range / fps): the project keeps its own
+				int Old = StrToIntDef(F[1], 0);
+				if (!IdMap.count(Old)) continue;
+				F[1] = IntToStr(IdMap[Old]);
+				String S = F[0];
+				for (size_t k = 1; k < F.size(); k++) S += L"\t" + F[k];
+				AnimOut->push_back(S);
+			}
+		}
+		if (Added) *Added = (int)In.Nodes.size();
+		Err = E;
+		Invalidate();
 		return true;
 	}
 

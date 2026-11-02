@@ -2,8 +2,8 @@ object Form1: TForm1
   Left = 0
   Top = 0
   Caption = 'myApplication'
-  ClientHeight = 543
-  ClientWidth = 727
+  ClientHeight = 625
+  ClientWidth = 844
   Color = clBtnFace
   CustomTitleBar.CaptionAlignment = taCenter
   CustomTitleBar.Control = TitleBarPanel1
@@ -2710,7 +2710,7 @@ object Form1: TForm1
   object TitleBarPanel1: TTitleBarPanel
     Left = 0
     Top = 0
-    Width = 727
+    Width = 844
     Height = 30
     OnPaint = TitleBarPanel1Paint
     CustomButtons = <
@@ -2727,13 +2727,13 @@ object Form1: TForm1
         OnPaint = TitleBarPanel1CustomButtons1Paint
       end>
     DesignSize = (
-      727
+      844
       30)
   end
   object pnlMenuBar: TPanel
     Left = 0
     Top = 30
-    Width = 727
+    Width = 844
     Height = 25
     Align = alTop
     BevelOuter = bvNone
@@ -2745,21 +2745,20 @@ object Form1: TForm1
     object tbrMenu: TToolBar
       Left = 0
       Top = 0
-      Width = 727
-      Height = 25
-      Align = alNone
+      Width = 844
+      Height = 23
       ButtonHeight = 23
-      ButtonWidth = 48
+      ButtonWidth = 54
       Menu = MainMenu1
       ShowCaptions = True
       TabOrder = 0
       StyleName = 'Platform Default'
     end
     object tbrHelp: TToolBar
-      Left = 677
-      Top = 0
+      Left = 794
+      Top = -4
       Width = 50
-      Height = 25
+      Height = 23
       Align = alNone
       ButtonHeight = 23
       ButtonWidth = 50
@@ -2771,7 +2770,7 @@ object Form1: TForm1
   object cbrTheme: TControlBar
     Left = 0
     Top = 55
-    Width = 727
+    Width = 844
     Height = 28
     Align = alTop
     AutoSize = True
@@ -2780,18 +2779,6 @@ object Form1: TForm1
     BevelOuter = bvNone
     RowSize = 28
     TabOrder = 3
-    object tbrTheme: TToolBar
-      Left = 557
-      Top = 2
-      Width = 168
-      Height = 24
-      Align = alNone
-      ButtonHeight = 24
-      ButtonWidth = 28
-      TabOrder = 0
-      StyleName = 'Platform Default'
-      Wrapable = False
-    end
     object ToolBar1: TToolBar
       Left = 11
       Top = 2
@@ -2800,7 +2787,7 @@ object Form1: TForm1
       Align = alNone
       ButtonHeight = 24
       ButtonWidth = 25
-      TabOrder = 1
+      TabOrder = 0
       StyleName = 'Platform Default'
       Wrapable = False
       object ToolButton1: TToolButton
@@ -2830,7 +2817,7 @@ object Form1: TForm1
       Align = alNone
       ButtonHeight = 24
       ButtonWidth = 25
-      TabOrder = 2
+      TabOrder = 1
       StyleName = 'Platform Default'
       Wrapable = False
       object ToolButton7: TToolButton
@@ -2848,7 +2835,7 @@ object Form1: TForm1
       Align = alNone
       ButtonHeight = 24
       ButtonWidth = 25
-      TabOrder = 3
+      TabOrder = 2
       StyleName = 'Platform Default'
       Wrapable = False
       object ToolButton9: TToolButton
@@ -2870,7 +2857,7 @@ object Form1: TForm1
       Align = alNone
       ButtonHeight = 24
       ButtonWidth = 25
-      TabOrder = 4
+      TabOrder = 3
       StyleName = 'Platform Default'
       Wrapable = False
       object ToolButton13: TToolButton
@@ -2887,6 +2874,7 @@ object Form1: TForm1
       Caption = #25991#20214'(&F)'
       object mnuNew: TMenuItem
         Caption = #26032#24314'(&N)'
+        ShortCut = 16462
       end
       object mnuOpen: TMenuItem
         Caption = #25171#24320'(&O)'
@@ -2899,6 +2887,15 @@ object Form1: TForm1
       end
       object N11: TMenuItem
         Caption = #21478#23384#20026'...'
+      end
+      object N15: TMenuItem
+        Caption = '-'
+      end
+      object N16: TMenuItem
+        Caption = #23548#20837
+      end
+      object N17: TMenuItem
+        Caption = #23548#20986
       end
       object N2: TMenuItem
         Caption = '-'
@@ -2916,6 +2913,17 @@ object Form1: TForm1
     end
     object mnuEdit: TMenuItem
       Caption = #32534#36753'(&E)'
+      object Undo1: TMenuItem
+        Caption = 'Undo'
+        ShortCut = 16474
+      end
+      object Redo1: TMenuItem
+        Caption = 'Redo'
+        ShortCut = 16473
+      end
+      object N14: TMenuItem
+        Caption = '-'
+      end
       object N4: TMenuItem
         Caption = #21098#20999
       end
@@ -2924,6 +2932,30 @@ object Form1: TForm1
       end
       object N6: TMenuItem
         Caption = #31896#36148
+      end
+      object N12: TMenuItem
+        Caption = '-'
+      end
+      object N13: TMenuItem
+        Caption = #21024#38500
+      end
+    end
+    object N18: TMenuItem
+      Caption = #21019#24314'(&C)'
+      object N2D1: TMenuItem
+        Caption = '2D'#22330#26223
+      end
+      object N3D1: TMenuItem
+        Caption = '3D'#22330#26223
+      end
+      object N19: TMenuItem
+        Caption = #26041#22359
+      end
+      object N20: TMenuItem
+        Caption = #24179#38754
+      end
+      object N21: TMenuItem
+        Caption = #21160#30011
       end
     end
     object mnuView: TMenuItem
@@ -2935,18 +2967,42 @@ object Form1: TForm1
         Caption = #38145#23450#24067#23616
       end
     end
+    object Player: TMenuItem
+      Caption = 'Player(&P)'
+      object RunProject: TMenuItem
+        Caption = 'Run Project'
+      end
+      object RunScene1: TMenuItem
+        Caption = 'Run Scene'
+      end
+      object N10: TMenuItem
+        Caption = '-'
+      end
+      object Restart1: TMenuItem
+        Caption = 'Restart'
+      end
+      object Refresh1: TMenuItem
+        Caption = 'Refresh'
+      end
+      object ShutDown1: TMenuItem
+        Caption = 'Shutdown'
+      end
+    end
   end
   object MainMenu2: TMainMenu
     Left = 184
     Top = 124
     object mnuHelp: TMenuItem
       Caption = #24110#21161'(&H)'
+      object OnLine: TMenuItem
+        Caption = #22312#32447'(&O)'
+      end
+      object develop1: TMenuItem
+        Caption = 'Developer'
+      end
       object About: TMenuItem
         Caption = #20851#20110'(&A)'
         OnClick = AboutClick
-      end
-      object OnLine: TMenuItem
-        Caption = #22312#32447'(&O)'
       end
     end
   end
