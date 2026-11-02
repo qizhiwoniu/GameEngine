@@ -1,4 +1,4 @@
-﻿//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 
 #ifndef Unit1H
 #define Unit1H
@@ -7,6 +7,7 @@
 #include "Viewport2D.h"
 #include "RunWindow.h"			// "Run" window: renders the scene of the 2D node graph
 #include "StartWindow.h"
+#include "SceneLink.h"			// links the 3D objects with the nodes of the 2D view
 #include <System.Classes.hpp>
 #include <Vcl.Controls.hpp>
 #include <Vcl.StdCtrls.hpp>
@@ -214,6 +215,7 @@ private:
     void __fastcall ApplyPropsTheme();
     void __fastcall PropsDrawCell(TObject *Sender, int ACol, int ARow, const TRect &Rect, TGridDrawState State);
     void __fastcall ViewportSelect(TObject *Sender);
+    void __fastcall SceneLinkTick(TObject *Sender);		// keeps 3D objects and 2D nodes in sync
 public:
     __fastcall TForm1(TComponent* Owner);
     __fastcall ~TForm1();

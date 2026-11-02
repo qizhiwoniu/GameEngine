@@ -1,4 +1,4 @@
-﻿//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 // TViewport2D - 2D node-graph viewport (SDL3 rendering)
 //
 // Header-only, same pattern as Viewport3D.h: #include "Viewport2D.h" in Unit1.h.
@@ -15,6 +15,11 @@
 //                                Dragging an already connected input pin picks the link up again,
 //                                dropping it on empty space deletes it
 //   - Delete / Ctrl+C / Ctrl+V / F2 : delete / copy / paste / rename
+//   - Z / F / X                : go to the selected node / fit all nodes into the window / zoom to 100%
+//   - double click a node header : fold / unfold the node;  double click the body of a Value node: edit its number
+//   - double click a group title bar : fold / unfold all nodes of the group
+//   - Run: boxes collide with each other (see ResolveCollisions)
+//   - Box / Plane nodes are linked with the objects of the 3D view (see SceneLink.h)
 //
 // The graph is a small data-flow program:
 //   Time / Keyboard / Accumulate produce numbers, Box / Plane turn numbers into scene objects,
@@ -26,6 +31,7 @@
 //---------------------------------------------------------------------------
 #ifndef Viewport2DH
 #define Viewport2DH
+#pragma message("Viewport2D.h rev 1525 compiled from: " __FILE__)		// shows in the IDE Messages window: proves which copy of the header the project really uses
 //---------------------------------------------------------------------------
 #include "SDLPanel.h"
 #include <Vcl.Forms.hpp>
@@ -39,20 +45,56 @@
 #include <set>
 #include <string>
 #include <algorithm>
+#include <System.SysUtils.hpp>
+#include <System.Classes.hpp>
 #include <math.h>
 #include <stdio.h>
 //---------------------------------------------------------------------------
 // Node kinds and their pins
 //---------------------------------------------------------------------------
-enum { nkBox, nkPlane, nkTime, nkKey, nkAccum, nkOutput, NK_COUNT };
+enum { nkBox, nkPlane, nkTime, nkKey, nkAccum, nkSub, nkValue, nkGravity, nkAdd, nkOutput, nkKeys,nkMouse,nkCamera, NK_COUNT };
 enum { ptNumber = 0, ptObject = 1 };			// pin types: only equal types can be linked
 
 struct TPinDef  { const wchar_t *Name; int Type; float Def; };		// Def = value of an unconnected number input
-struct TKindDef { const wchar_t *Name; int R, G, B; int NIn; TPinDef In[5]; int NOut; TPinDef Out[4]; };
+struct TKindDef { const wchar_t *Name; int R, G, B; int NIn; TPinDef In[5]; int NOut; TPinDef Out[8]; };
+
+// ---- node kinds 键盘 / 鼠标 / 镜头: each has its own definition function (used by KindDef below) ----
+inline const TKindDef &KindDefKeys()
+{
+	// nkKeys: 键盘按键（按下输出 1，反向输出 -1）
+	static const TKindDef D =
+		{ L"\u952E\u76D8", 40, 140, 100,
+		  0, { },
+		  2, { { L"\u6309\u4E0B", ptNumber, 0.0f }, { L"\u53CD\u5411", ptNumber, 0.0f } } };		// 按下 / 反向
+	return D;
+}
+
+inline const TKindDef &KindDefMouse()
+{
+	// nkMouse: 输出鼠标 X / Y（运行窗口中，窗口中心为 0，范围 -1..1，右 / 上为正）；控制模式显示在节点主体，由 MouseMode() 读取
+	static const TKindDef D =
+		{ L"\u9F20\u6807", 150, 90, 110,
+		  0, { },
+		  2, { { L"X", ptNumber, 0.0f }, { L"Y", ptNumber, 0.0f } } };
+	return D;
+}
+
+inline const TKindDef &KindDefCamera()
+{
+	// nkCamera: 镜头位置输入 XYZ
+	static const TKindDef D =
+		{ L"\u955C\u5934", 140, 110, 60,
+		  3, { { L"\u4F4D\u7F6EX", ptNumber, 0.0f }, { L"\u4F4D\u7F6EY", ptNumber, 4.5f }, { L"\u4F4D\u7F6EZ", ptNumber, -11.0f } },
+		  0, { } };
+	return D;
+}
 
 inline const TKindDef &KindDef(int K)
 {
-	static const TKindDef D[NK_COUNT] =
+	if (K == nkKeys)   return KindDefKeys();
+	if (K == nkMouse)  return KindDefMouse();
+	if (K == nkCamera) return KindDefCamera();
+	static const TKindDef D[] =			// size is checked below: a missing entry would be a zeroed (blank, pin-less) node kind
 	{
 		// nkBox: 方块
 		{ L"\u65B9\u5757", 56, 120, 170,
@@ -77,17 +119,59 @@ inline const TKindDef &KindDef(int K)
 		{ L"\u7D2F\u52A0", 110, 130, 60,
 		  2, { { L"\u6570\u503C", ptNumber, 0.0f }, { L"\u901F\u5EA6", ptNumber, 3.0f } },
 		  1, { { L"\u7D2F\u8BA1", ptNumber, 0.0f } } },
+		// nkSub: 累减 (the opposite of 累加: integrates  -value * speed  over time)
+		{ L"\u7D2F\u51CF", 150, 100, 60,
+		  2, { { L"\u6570\u503C", ptNumber, 0.0f }, { L"\u901F\u5EA6", ptNumber, 3.0f } },
+		  1, { { L"\u7D2F\u8BA1", ptNumber, 0.0f } } },
+		// nkValue: 数值 (a constant; double click the body to edit it)
+		{ L"\u6570\u503C", 150, 120, 60,
+		  0, { },
+		  1, { { L"\u6570\u503C", ptNumber, 0.0f } } },
+		// nkGravity: 重力 (simulated height: a trigger sets the vertical speed, gravity pulls it down, it lands on the ground
+		// height or on top of a box (collision feeds the resolved height back))
+		{ L"\u91CD\u529B", 60, 110, 160,
+		  4, { { L"\u89E6\u53D1", ptNumber, 0.0f }, { L"\u8D77\u8DF3\u901F\u5EA6", ptNumber, 8.0f },
+			   { L"\u91CD\u529B", ptNumber, 20.0f }, { L"\u5730\u9762\u9AD8\u5EA6", ptNumber, 0.5f } },
+		  1, { { L"\u9AD8\u5EA6", ptNumber, 0.0f } } },
+		// nkAdd: 相加 (A + B; feed it a key's "按下" and another key's "反向" to get a -1 .. 1 axis)
+		{ L"\u76F8\u52A0", 90, 140, 150,
+		  2, { { L"A", ptNumber, 0.0f }, { L"B", ptNumber, 0.0f } },
+		  1, { { L"\u8F93\u51FA", ptNumber, 0.0f } } },
 		// nkOutput: 运行输出
 		{ L"\u8FD0\u884C\u8F93\u51FA", 175, 60, 60,
 		  1, { { L"\u573A\u666F", ptObject, 0.0f } },
-		  0, { } }
+		  0, { } },
 	};
-	return D[(K >= 0 && K < NK_COUNT) ? K : 0];
+	static_assert(sizeof(D) / sizeof(D[0]) == nkKeys, "KindDef: one table entry per node kind nkBox..nkOutput");
+	return D[(K >= 0 && K < nkKeys) ? K : 0];
+}
+// display name of a node kind; falls back to a literal if the table entry is ever empty
+inline String KindName(int K)
+{
+	const TKindDef &D = KindDef(K);
+	if (D.Name && D.Name[0]) return String(D.Name);
+	switch (K)
+	{
+		case nkKeys:   return String(L"\u952E\u76D8");		// 键盘
+		case nkMouse:  return String(L"\u9F20\u6807");		// 鼠标
+		case nkCamera: return String(L"\u955C\u5934");		// 镜头
+	}
+	return String(L"\u8282\u70B9");							// 节点
 }
 //---------------------------------------------------------------------------
 // One scene object produced by the graph (read by the render window)
+// keys a "Key" node can read: W A S D Up Down Left Right Space Q E R F Shift Ctrl Z X C
+enum { NKEYS = 14 };
+inline int KeyVk(int i)
+{
+	static const int Vk[NKEYS] = { 'W', 'A', 'S', 'D', VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_SPACE,
+								   VK_SHIFT, VK_CONTROL, 'Z', 'X', 'C' };
+	return Vk[(i < 0 || i >= NKEYS) ? 0 : i];
+}
+//---------------------------------------------------------------------------
 struct TRunObj
 {
+	int   Id;							// node id (collision state is kept per node)
 	int   Kind;							// nkBox / nkPlane
 	float X, Y, Z, Rot, Scale;			// position, rotation around Y in degrees, scale
 	int   R, G, B;						// base colour
@@ -186,9 +270,13 @@ class TViewport2D : public TSDLPanel
 {
 private:
 	// ---- data -----------------------------------------------------------
-	struct TNode { int Id; int Kind; String Name; float X, Y; bool Sel; int Group; };	// X,Y = top-left, world units; Group 0 = none
+	// X,Y = top-left, world units; Group 0 = none
+	// Obj = uid of the linked 3D scene object (0 = none); Collapsed = only the header is shown;
+	// HasVal / Val = values of the 5 inputs (position X/Y/Z, rotation, scale) used while a pin is not connected
+	struct TNode { int Id; int Kind; String Name; float X, Y; bool Sel; int Group;
+				   int Obj; bool Collapsed; bool HasVal; float Val[5]; };
 	struct TLink { int From; int FromPin; int To; int ToPin; };				// output pin of From -> input pin of To
-	struct TGroup { int Id; String Name; };									// a frame around its member nodes
+	struct TGroup { int Id; String Name; bool Collapsed; };					// a frame around its member nodes (Collapsed = members hidden)
 	enum   TDrag { dgNone, dgPan, dgMove, dgLink, dgRubber };
 	enum   { hkNone, hkNode, hkIn, hkOut, hkGroup };					// hkGroup: Node = group id (title bar of the frame)
 	struct THit  { int Kind; int Node; int Pin; };
@@ -219,6 +307,7 @@ private:
 
 	TPopupMenu *FMenu;
 	TMenuItem  *FmiCopy, *FmiPaste, *FmiRename, *FmiGroup, *FmiUngroup;
+    TMenuItem  *FmiW,*FmiA,*FmiS,*FmiD,*FmiUp,*FmiDown,*FmiLeft,*FmiRight;
 	float FMenuWX, FMenuWY;			// where the menu was opened (world)
 	int   FMenuNode;				// node under the cursor when the menu was opened (0 = none)
 	int   FMenuGroup;				// group title under the cursor when the menu was opened (0 = none)
@@ -229,9 +318,24 @@ private:
 
 	TSdlText FTxt;
 
+	// double click detection on node headers (VCL's ssDouble is not reliable here)
+	DWORD FClickTick;
+	int   FClickNode, FClickX, FClickY;
+
 	// run state (see RunStep)
+	std::map<int, float> FJumpT;		// seconds since the jump started (< 0 = on the ground) of every "Jump" node
+	std::map<int, bool>  FJumpHeld;		// trigger state of the last frame (a jump starts on the rising edge)
+	struct TColState { float Rx, Ry, Rz, Px, Py, Pz; };		// last requested (graph) and resolved position
+	std::map<int, TColState> FCol;
+	std::map<int, float> FReqY;
+	struct TGrav { float Y, Vy; bool On, Held; };		// state of a "Gravity" node: height, vertical speed, standing on something
+	std::map<int, TGrav> FGrav;
+	bool FCollide;
 	std::map<int, float> FAccum;	// accumulated value of every "Accumulate" node
 	float FRunT, FRunH, FRunV, FRunS;
+	bool FRunDown[256];				// virtual keys that are down (set by the run window)
+	unsigned FRunKeys;				// bit 0..7 = W A S D Up Down Left Right
+	float FRunMX, FRunMY;			// mouse position in the run window, -1..1 from the centre (right / up = +), set by the run window
 
 	// ---- small helpers --------------------------------------------------
 	void __fastcall SetColor(SDL_Renderer *R, int r, int g, int b, int a = 255)
@@ -252,6 +356,7 @@ private:
 	}
 
 	static float NodeH(int Kind) { return HEAD_H + ROW_H * RowsOf(Kind); }
+	static float NodeHN(const TNode &N) { return N.Collapsed ? HEAD_H : NodeH(N.Kind); }	// collapsed: header only
 
 	float SX(float wx) { return ClientWidth  * 0.5f + FPanX + wx * FZoom; }
 	float SY(float wy) { return ClientHeight * 0.5f + FPanY + wy * FZoom; }
@@ -265,11 +370,138 @@ private:
 		return -1;
 	}
 
+	// key shown by a "Key" node (Val[0] = index: W A S D Up Down Left Right)
+	// a key node stores the Windows virtual-key code in Val[0] (any key can be typed in: double click the node body)
+	static int KeyVkOf(const TNode &N)
+	{
+		int k = (int)(N.Val[0] + 0.5f);
+		return (k < 1 || k > 254) ? 'W' : k;
+	}
+
+	static String KeyNameOfVk(int vk)
+	{
+		if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return String((wchar_t)vk);
+		if (vk >= VK_F1 && vk <= VK_F24) return String(L"F") + IntToStr(vk - VK_F1 + 1);
+		if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return String(L"Num") + IntToStr(vk - VK_NUMPAD0);
+		switch (vk)
+		{
+			case VK_SPACE:  return String(L"\u7A7A\u683C");
+			case VK_UP:     return String(L"\u4E0A");
+			case VK_DOWN:   return String(L"\u4E0B");
+			case VK_LEFT:   return String(L"\u5DE6");
+			case VK_RIGHT:  return String(L"\u53F3");
+			case VK_RETURN: return String(L"Enter");
+			case VK_TAB:    return String(L"Tab");
+			case VK_ESCAPE: return String(L"Esc");
+			case VK_SHIFT:  return String(L"Shift");
+			case VK_CONTROL:return String(L"Ctrl");
+			case VK_MENU:   return String(L"Alt");
+			case VK_BACK:   return String(L"Backspace");
+			case VK_DELETE: return String(L"Delete");
+			case VK_INSERT: return String(L"Insert");
+			case VK_HOME:   return String(L"Home");
+			case VK_END:    return String(L"End");
+			case VK_PRIOR:  return String(L"PageUp");
+			case VK_NEXT:   return String(L"PageDown");
+			case VK_CAPITAL:return String(L"CapsLock");
+			case VK_OEM_COMMA:  return String(L",");
+			case VK_OEM_PERIOD: return String(L".");
+			case VK_OEM_MINUS:  return String(L"-");
+			case VK_OEM_PLUS:   return String(L"=");
+			case VK_OEM_1:      return String(L";");
+			case VK_OEM_2:      return String(L"/");
+			case VK_OEM_3:      return String(L"`");
+			case VK_OEM_4:      return String(L"[");
+			case VK_OEM_5:      return String(L"\\");
+			case VK_OEM_6:      return String(L"]");
+			case VK_OEM_7:      return String(L"'");
+		}
+		return String(L"#") + IntToStr(vk);
+	}
+
+	// text typed by the user -> virtual-key code (letters, digits, F1..F24, Num0..9, names in English or Chinese)
+	static bool KeyFromText(const String &Text, int &vk)
+	{
+		String U = Text.Trim().UpperCase();
+		if (U.IsEmpty()) return false;
+		if (U.Length() == 1)
+		{
+			wchar_t c = U[1];
+			if ((c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9')) { vk = (int)c; return true; }
+			switch (c)
+			{
+				case L',': vk = VK_OEM_COMMA; return true;
+				case L'.': vk = VK_OEM_PERIOD; return true;
+				case L'-': vk = VK_OEM_MINUS; return true;
+				case L'=': vk = VK_OEM_PLUS; return true;
+				case L';': vk = VK_OEM_1; return true;
+				case L'/': vk = VK_OEM_2; return true;
+				case L'`': vk = VK_OEM_3; return true;
+				case L'[': vk = VK_OEM_4; return true;
+				case L'\\': vk = VK_OEM_5; return true;
+				case L']': vk = VK_OEM_6; return true;
+				case L'\'': vk = VK_OEM_7; return true;
+			}
+		}
+		if (U.Length() >= 2 && U[1] == L'F')				// F1 .. F24
+		{
+			int n = StrToIntDef(U.SubString(2, U.Length() - 1), 0);
+			if (n >= 1 && n <= 24) { vk = VK_F1 + n - 1; return true; }
+		}
+		if (U.Length() >= 4 && U.SubString(1, 3) == L"NUM")	// NUM0 .. NUM9
+		{
+			int n = StrToIntDef(U.SubString(4, U.Length() - 3), -1);
+			if (n >= 0 && n <= 9) { vk = VK_NUMPAD0 + n; return true; }
+		}
+		struct TName { const wchar_t *Name; int Vk; };
+		static const TName Names[] =
+		{
+			{ L"\u7A7A\u683C", VK_SPACE }, { L"SPACE", VK_SPACE }, { L"\u4E0A", VK_UP }, { L"UP", VK_UP },
+			{ L"\u4E0B", VK_DOWN }, { L"DOWN", VK_DOWN }, { L"\u5DE6", VK_LEFT }, { L"LEFT", VK_LEFT },
+			{ L"\u53F3", VK_RIGHT }, { L"RIGHT", VK_RIGHT }, { L"\u56DE\u8F66", VK_RETURN }, { L"ENTER", VK_RETURN },
+			{ L"RETURN", VK_RETURN }, { L"TAB", VK_TAB }, { L"ESC", VK_ESCAPE }, { L"ESCAPE", VK_ESCAPE },
+			{ L"SHIFT", VK_SHIFT }, { L"CTRL", VK_CONTROL }, { L"CONTROL", VK_CONTROL }, { L"ALT", VK_MENU },
+			{ L"\u9000\u683C", VK_BACK }, { L"BACKSPACE", VK_BACK }, { L"\u5220\u9664", VK_DELETE },
+			{ L"DELETE", VK_DELETE }, { L"DEL", VK_DELETE }, { L"INSERT", VK_INSERT }, { L"INS", VK_INSERT },
+			{ L"HOME", VK_HOME }, { L"END", VK_END }, { L"PAGEUP", VK_PRIOR }, { L"PGUP", VK_PRIOR },
+			{ L"PAGEDOWN", VK_NEXT }, { L"PGDN", VK_NEXT }, { L"CAPSLOCK", VK_CAPITAL }, { L"CAPS", VK_CAPITAL }
+		};
+		for (size_t i = 0; i < sizeof(Names) / sizeof(Names[0]); i++)
+			if (U == Names[i].Name) { vk = Names[i].Vk; return true; }
+		return false;
+	}
+
+	static String KeyNameOf(const TNode &N)
+	{
+		return KeyNameOfVk(KeyVkOf(N));
+	}
+
+	// true when the node belongs to a folded group (it is not drawn, not clickable)
+	bool NodeHidden(const TNode &N)
+	{
+		if (N.Group == 0) return false;
+		int g = FindGroup(N.Group);
+		return g >= 0 && FGroups[g].Collapsed;
+	}
+
 	// screen position of a pin
 	void PinPos(const TNode &N, bool Out, int Idx, float &px, float &py)
 	{
+		if (NodeHidden(N))		// inside a folded group: links end at the left / right side of the group's title bar
+		{
+			float x0, y0, x1, y1;
+			if (GroupRect(N.Group, x0, y0, x1, y1))
+			{
+				px = SX(Out ? x1 : x0);
+				py = SY(y0 + GRP_TITLE * 0.5f);
+				return;
+			}
+		}
 		px = SX(N.X + (Out ? NODE_W : 0.0f));
-		py = SY(N.Y + HEAD_H + ROW_H * (Idx + 0.5f));
+		if (N.Collapsed)
+			py = SY(N.Y + HEAD_H * 0.5f);		// collapsed: every link ends at the middle of the header
+		else
+			py = SY(N.Y + HEAD_H + ROW_H * (Idx + 0.5f));
 	}
 
 	THit HitTest(int sx, int sy)
@@ -294,20 +526,21 @@ private:
 		for (int i = (int)FNodes.size() - 1; i >= 0; i--)
 		{
 			TNode &N = FNodes[i];
+			if (NodeHidden(N)) continue;
 			const TKindDef &D = KindDef(N.Kind);
 			float px, py;
-			for (int k = 0; k < D.NIn; k++)
+			for (int k = 0; !N.Collapsed && k < D.NIn; k++)
 			{
 				PinPos(N, false, k, px, py);
 				if ((sx - px) * (sx - px) + (sy - py) * (sy - py) <= pr * pr) { H.Kind = hkIn; H.Node = N.Id; H.Pin = k; return H; }
 			}
-			for (int k = 0; k < D.NOut; k++)
+			for (int k = 0; !N.Collapsed && k < D.NOut; k++)
 			{
 				PinPos(N, true, k, px, py);
 				if ((sx - px) * (sx - px) + (sy - py) * (sy - py) <= pr * pr) { H.Kind = hkOut; H.Node = N.Id; H.Pin = k; return H; }
 			}
 			float x = SX(N.X), y = SY(N.Y);
-			if (sx >= x && sx <= x + NODE_W * FZoom && sy >= y && sy <= y + NodeH(N.Kind) * FZoom)
+			if (sx >= x && sx <= x + NODE_W * FZoom && sy >= y && sy <= y + NodeHN(N) * FZoom)
 			{ H.Kind = hkNode; H.Node = N.Id; return H; }
 		}
 		return H;
@@ -329,11 +562,20 @@ private:
 		{
 			const TNode &N = FNodes[i];
 			if (N.Group != Gid) continue;
-			float ax = N.X, ay = N.Y, bx = N.X + NODE_W, by = N.Y + NodeH(N.Kind);
+			float ax = N.X, ay = N.Y, bx = N.X + NODE_W, by = N.Y + NodeHN(N);
 			if (!any) { x0 = ax; y0 = ay; x1 = bx; y1 = by; any = true; }
 			else { x0 = std::min(x0, ax); y0 = std::min(y0, ay); x1 = std::max(x1, bx); y1 = std::max(y1, by); }
 		}
-		if (any) { x0 -= GRP_PAD; x1 += GRP_PAD; y1 += GRP_PAD; y0 -= GRP_PAD + GRP_TITLE; }
+		if (any)
+		{
+			x0 -= GRP_PAD; x1 += GRP_PAD; y1 += GRP_PAD; y0 -= GRP_PAD + GRP_TITLE;
+			int gi = FindGroup(Gid);
+			if (gi >= 0 && FGroups[gi].Collapsed)		// folded: only a title bar of normal node width
+			{
+				x1 = x0 + NODE_W + 2.0f * GRP_PAD;
+				y1 = y0 + GRP_TITLE;
+			}
+		}
 		return any;
 	}
 
@@ -376,6 +618,7 @@ private:
 		TGroup G;
 		G.Id   = FNextGroup++;
 		G.Name = String(L"\u7EC4") + L" " + IntToStr(++FGroupCounter);		// 组
+		G.Collapsed = false;
 		FGroups.push_back(G);
 		for (size_t i = 0; i < FNodes.size(); i++)
 			if (FNodes[i].Sel) FNodes[i].Group = G.Id;
@@ -395,6 +638,120 @@ private:
 		for (size_t i = 0; i < FNodes.size(); i++)
 			if (FNodes[i].Sel && FNodes[i].Group != 0) return true;
 		return false;
+	}
+
+	// ---- view commands: Z locate, F fit all, X 100% -----------------------
+	// Z: centre the view on the selected node(s) (zoom stays)
+	void LocateSelected()
+	{
+		bool any = false;
+		float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		for (size_t i = 0; i < FNodes.size(); i++)
+		{
+			const TNode &N = FNodes[i];
+			if (!N.Sel) continue;
+			float bx = N.X + NODE_W, by = N.Y + NodeHN(N);
+			if (!any) { x0 = N.X; y0 = N.Y; x1 = bx; y1 = by; any = true; }
+			else { x0 = std::min(x0, N.X); y0 = std::min(y0, N.Y); x1 = std::max(x1, bx); y1 = std::max(y1, by); }
+		}
+		if (!any) return;
+		FPanX = -(x0 + x1) * 0.5f * FZoom;
+		FPanY = -(y0 + y1) * 0.5f * FZoom;
+	}
+
+	// F: zoom and pan so that every node (and group frame) fits into the window
+	void FitAll()
+	{
+		bool any = false;
+		float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		for (size_t i = 0; i < FNodes.size(); i++)
+		{
+			const TNode &N = FNodes[i];
+			if (NodeHidden(N)) continue;			// covered by its folded group frame below
+			float bx = N.X + NODE_W, by = N.Y + NodeHN(N);
+			if (!any) { x0 = N.X; y0 = N.Y; x1 = bx; y1 = by; any = true; }
+			else { x0 = std::min(x0, N.X); y0 = std::min(y0, N.Y); x1 = std::max(x1, bx); y1 = std::max(y1, by); }
+		}
+		for (size_t g = 0; g < FGroups.size(); g++)
+		{
+			float gx0, gy0, gx1, gy1;
+			if (!GroupRect(FGroups[g].Id, gx0, gy0, gx1, gy1)) continue;
+			if (!any) { x0 = gx0; y0 = gy0; x1 = gx1; y1 = gy1; any = true; continue; }
+			x0 = std::min(x0, gx0); y0 = std::min(y0, gy0); x1 = std::max(x1, gx1); y1 = std::max(y1, gy1);
+		}
+		if (!any) { FZoom = 1.0f; FPanX = FPanY = 0.0f; return; }
+		float bw = std::max(x1 - x0, 1.0f), bh = std::max(y1 - y0, 1.0f);
+		float z = std::min(ClientWidth * 0.9f / bw, ClientHeight * 0.9f / bh);
+		z = std::min(1.5f, std::max(0.1f, z));
+		FZoom = z;
+		FPanX = -(x0 + x1) * 0.5f * z;
+		FPanY = -(y0 + y1) * 0.5f * z;
+	}
+
+	// X: zoom to 100%, the world point in the middle of the window stays there
+	void ZoomActual()
+	{
+		float c = FZoom;
+		FPanX /= c; FPanY /= c;
+		FZoom = 1.0f;
+	}
+
+	// second click on the same node header within the system double click time = fold / unfold it
+	bool ToggleOnDoubleClick(int Id, int X, int Y)
+	{
+		DWORD now = ::GetTickCount();
+		bool dbl = (Id == FClickNode) && (now - FClickTick <= ::GetDoubleClickTime()) &&
+				   abs(X - FClickX) <= 4 && abs(Y - FClickY) <= 4;
+		FClickNode = Id; FClickTick = now; FClickX = X; FClickY = Y;
+		if (!dbl) return false;
+		int idx = FindNode(Id);
+		if (idx < 0) return false;
+		if ((float)Y > SY(FNodes[idx].Y) + HEAD_H * FZoom)
+		{
+			if (FNodes[idx].Kind == nkValue && !FNodes[idx].Collapsed)		// double click on the body of a value node: edit it
+			{
+				FClickNode = 0;
+				EditValue(Id);
+				return true;
+			}
+			if (FNodes[idx].Kind == nkMouse && !FNodes[idx].Collapsed)		// double click on the body of a mouse node: click / no click
+			{
+				FClickNode = 0;
+				FNodes[idx].Val[0] = FNodes[idx].Val[0] > 0.5f ? 0.0f : 1.0f;
+				return true;
+			}
+			if (FNodes[idx].Kind == nkKeys && !FNodes[idx].Collapsed)		// double click on the body of a key node: next key
+			{
+				FClickNode = 0;
+				EditKey(Id);
+				return true;
+			}
+			return false;			// only the header folds the node
+		}
+		FNodes[idx].Collapsed = !FNodes[idx].Collapsed;
+		FClickNode = 0;
+		return true;
+	}
+
+	bool GroupFolded(int Gid)		// true when the group is folded (its nodes are hidden)
+	{
+		int g = FindGroup(Gid);
+		return g >= 0 && FGroups[g].Collapsed;
+	}
+
+	// second click on the same group title bar = fold / unfold all member nodes
+	bool ToggleGroupOnDoubleClick(int Gid, int X, int Y)
+	{
+		DWORD now = ::GetTickCount();
+		bool dbl = (-Gid == FClickNode) && (now - FClickTick <= ::GetDoubleClickTime()) &&
+				   abs(X - FClickX) <= 4 && abs(Y - FClickY) <= 4;
+		FClickNode = -Gid; FClickTick = now; FClickX = X; FClickY = Y;
+		if (!dbl) return false;
+		int g = FindGroup(Gid);
+		if (g >= 0) FGroups[g].Collapsed = !FGroups[g].Collapsed;		// fold / unfold the group like a normal node
+		SelectGroup(Gid, false);										// the members stay selected (a drag moves the whole group)
+		FClickNode = 0;
+		return true;
 	}
 
 	// ---- node operations ------------------------------------------------
@@ -424,9 +781,14 @@ private:
 		TNode N;
 		N.Id   = FNextId++;
 		N.Kind = Kind;
-		N.Name = String(KindDef(Kind).Name) + L" " + IntToStr(++FCounter[Kind]);
+		N.Name = KindName(Kind) + L" " + IntToStr(++FCounter[Kind]);
 		N.X = wx; N.Y = wy;
 		N.Group = 0;
+		N.Obj = 0; N.Collapsed = false; N.HasVal = false;
+		for (int k = 0; k < 5; k++) N.Val[k] = 0.0f;
+		if (Kind == nkValue) { N.HasVal = true; N.Val[0] = 1.0f; }
+		if (Kind == nkKeys)  { N.HasVal = true; N.Val[0] = (float)'W'; }		// Val[0] = Windows virtual-key code (default W)
+		if (Kind == nkMouse) { N.HasVal = true; N.Val[0] = 0.0f; }		// Val[0] = 0 click + drag, 1 no click
 		ClearSel();
 		N.Sel = true;
 		FNodes.push_back(N);
@@ -498,6 +860,7 @@ private:
 			N.X    = wx + (N.X - minx);
 			N.Y    = wy + (N.Y - miny);
 			N.Name = N.Name + L" \u590D\u5236";		// "复制"
+			N.Obj  = 0;									// a pasted node becomes a NEW 3D object
 			N.Sel  = true;
 			IdMap[OldId] = N.Id;
 			FNodes.push_back(N);
@@ -520,6 +883,31 @@ private:
 		{
 			S = S.Trim();
 			if (!S.IsEmpty()) FGroups[idx].Name = S;
+		}
+	}
+
+	void EditValue(int Id)
+	{
+		int idx = FindNode(Id);
+		if (idx < 0 || FNodes[idx].Kind != nkValue) return;
+		String S = FloatToStrF(FNodes[idx].Val[0], ffGeneral, 7, 0);
+		if (InputQuery(L"\u6570\u503C", L"\u6570\u503C", S))		// 数值
+		{
+			float v = (float)StrToFloatDef(S.Trim(), FNodes[idx].Val[0]);
+			FNodes[idx].Val[0] = v;
+		}
+	}
+
+	void EditKey(int Id)		// double click on a key node: type the key (W, F5, 空格, Shift ...)
+	{
+		int idx = FindNode(Id);
+		if (idx < 0 || FNodes[idx].Kind != nkKeys) return;
+		String S = KeyNameOf(FNodes[idx]);
+		if (InputQuery(L"\u6309\u952E", L"\u8F93\u5165\u6309\u952E\uFF08\u5982 W\u3001F5\u3001\u7A7A\u683C\u3001Shift\u3001\u4E0A\uFF09", S))
+		{
+			int vk = 0;
+			if (KeyFromText(S, vk)) FNodes[idx].Val[0] = (float)vk;
+			else ShowMessage(L"\u65E0\u6CD5\u8BC6\u522B\u7684\u6309\u952E");
 		}
 	}
 
@@ -586,7 +974,9 @@ private:
 			if (FLinks[i].To == NodeId && FLinks[i].ToPin == Pin)
 				return EvalOut(FLinks[i].From, FLinks[i].FromPin);
 		int idx = FindNode(NodeId);
-		return idx >= 0 ? KindDef(FNodes[idx].Kind).In[Pin].Def : 0.0f;
+		if (idx < 0) return 0.0f;
+		if (FNodes[idx].HasVal && Pin >= 0 && Pin < 5) return FNodes[idx].Val[Pin];		// value of the linked 3D object
+		return KindDef(FNodes[idx].Kind).In[Pin].Def;
 	}
 
 	float EvalOut(int NodeId, int Pin)
@@ -600,9 +990,32 @@ private:
 				if (Pin == 1) return sinf(FRunT);
 				if (Pin == 2) return cosf(FRunT);
 				return fmodf(FRunT * 90.0f, 360.0f);			// angle: 90 degrees per second
+			case nkValue:
+				return FNodes[idx].Val[0];
+			case nkGravity:
+			{
+				std::map<int, TGrav>::iterator it = FGrav.find(NodeId);
+				return it == FGrav.end() ? EvalIn(NodeId, 3) : it->second.Y;
+			}
+			//case nkJump:
+			//{
+			//	float base = EvalIn(NodeId, 1);
+			//	std::map<int, float>::iterator it = FJumpT.find(NodeId);
+			//	if (it == FJumpT.end() || it->second < 0.0f) return base;
+			//	float dur = std::max(0.05f, EvalIn(NodeId, 3));
+			//	float u = std::min(1.0f, it->second / dur);
+			//	return base + EvalIn(NodeId, 2) * 4.0f * u * (1.0f - u);
+			//}
+			case nkKeys:
+				return EvalKeysOut(idx, Pin);
+			case nkAdd:
+				return EvalIn(NodeId, 0) + EvalIn(NodeId, 1);
+			case nkMouse:
+				return EvalMouseOut(Pin);
 			case nkKey:
 				return Pin == 0 ? FRunH : (Pin == 1 ? FRunV : FRunS);
 			case nkAccum:
+			case nkSub:
 			{
 				std::map<int, float>::iterator it = FAccum.find(NodeId);
 				return it == FAccum.end() ? 0.0f : it->second;
@@ -620,10 +1033,11 @@ private:
 		static const int Pal[6][3] = { { 90, 150, 220 }, { 220, 120, 90 }, { 110, 200, 130 },
 									   { 220, 190, 90 }, { 170, 120, 220 }, { 90, 200, 200 } };
 		TRunObj O;
+		O.Id    = NodeId;
 		O.Kind  = K;
 		O.X     = EvalIn(NodeId, 0);
 		O.Y     = EvalIn(NodeId, 1);
-		O.Z     = EvalIn(NodeId, 2);
+		O.Z     = -EvalIn(NodeId, 2);			// +Z of the graph = away from the run camera (W moves the object away)
 		O.Rot   = EvalIn(NodeId, 3);
 		O.Scale = EvalIn(NodeId, 4);
 		if (K == nkPlane) { O.R = 92; O.G = 98; O.B = 108; }
@@ -634,6 +1048,74 @@ private:
 		}
 		Out.push_back(O);
 	}
+
+	// ---- 键盘 / 鼠标 / 镜头: menu entries, each written separately ----------
+	enum { mtKeyBase = 200, mtMouseClick = 41, mtMouseNoClick = 42, mtCameraPos = 51 };		// menu tags
+
+	// Val[0] of the right-clicked node (or of the selected nodes) of this kind = V; when there is none a new node is created at the menu position
+	void SetKindValue(int Kind, float V)
+	{
+		bool done = false;
+		int hit = FMenuNode ? FindNode(FMenuNode) : -1;
+		if (hit >= 0 && FNodes[hit].Kind == Kind)
+		{
+			FNodes[hit].Val[0] = V;
+			done = true;
+		}
+		else
+			for (size_t i = 0; i < FNodes.size(); i++)
+				if (FNodes[i].Sel && FNodes[i].Kind == Kind) { FNodes[i].Val[0] = V; done = true; }
+		if (!done)
+		{
+			AddNode(Kind, FMenuWX, FMenuWY);
+			FNodes.back().Val[0] = V;
+		}
+	}
+
+	void MenuKeyboard(int Index)	{ SetKindValue(nkKeys, (float)KeyVk(Index)); }						// 键盘 -> W / A / S / D / ...
+	void MenuMouse(bool NoClick)	{ SetKindValue(nkMouse, NoClick ? 1.0f : 0.0f); }					// 鼠标 -> 点击控制 / 不点击控制
+	void MenuCamera()				{ AddNode(nkCamera, FMenuWX, FMenuWY); }							// 镜头 -> 位置 XYZ
+
+	// true when the tag belongs to the 键盘 / 鼠标 / 镜头 menus (and it was handled)
+	bool HandleDeviceMenu(int T)
+	{
+		if (T >= mtKeyBase && T < mtKeyBase + NKEYS)       { MenuKeyboard(T - mtKeyBase); return true; }
+		if (T == mtMouseClick || T == mtMouseNoClick)      { MenuMouse(T == mtMouseNoClick); return true; }
+		if (T == mtCameraPos)                              { MenuCamera(); return true; }
+		return false;
+	}
+
+	TMenuItem * BuildKeyboardMenu()
+	{
+		TMenuItem *Mi = NewItem(L"\u952E\u76D8", 0);				// 键盘
+		for (int i = 0; i < NKEYS; i++)
+			Mi->Add(NewItem(KeyNameOfVk(KeyVk(i)), mtKeyBase + i));
+		return Mi;
+	}
+
+	TMenuItem * BuildMouseMenu()
+	{
+		TMenuItem *Mi = NewItem(L"\u9F20\u6807", 0);				// 鼠标
+		Mi->Add(NewItem(L"\u70B9\u51FB\u63A7\u5236", mtMouseClick));			// 点击控制
+		Mi->Add(NewItem(L"\u4E0D\u70B9\u51FB\u63A7\u5236", mtMouseNoClick));	// 不点击控制
+		return Mi;
+	}
+
+	TMenuItem * BuildCameraMenu()
+	{
+		TMenuItem *Mi = NewItem(L"\u955C\u5934", 0);				// 镜头
+		Mi->Add(NewItem(L"\u4F4D\u7F6E XYZ", mtCameraPos));		// 位置 XYZ
+		return Mi;
+	}
+
+	// ---- node outputs of 键盘 / 鼠标 ----
+	float EvalKeysOut(int Idx, int Pin)
+	{
+		float down = FRunDown[KeyVkOf(FNodes[Idx])] ? 1.0f : 0.0f;
+		return Pin == 0 ? down : -down;			// pin 1 = reversed direction (0 / -1)
+	}
+
+	float EvalMouseOut(int Pin) { return Pin == 0 ? FRunMX : FRunMY; }
 
 	// ---- context menu ---------------------------------------------------
 	TMenuItem * __fastcall NewItem(const String &Cap, int Tag)
@@ -649,6 +1131,7 @@ private:
 	{
 		int T = (int)static_cast<TMenuItem*>(Sender)->Tag;
 		if (T >= 100 && T < 100 + NK_COUNT) { AddNode(T - 100, FMenuWX, FMenuWY); return; }
+		if (HandleDeviceMenu(T)) return;			// 键盘 / 鼠标 / 镜头 entries (see below)
 		switch (T)
 		{
 			case 11: CopySelected(); break;
@@ -668,9 +1151,14 @@ private:
 	void BuildMenu()
 	{
 		FMenu = new TPopupMenu(this);
+		FMenu->AutoHotkeys = maManual;		// no automatic "(X)" hotkeys: with many items the letters run out and the last entries came out blank
 		TMenuItem *c = NewItem(L"\u521B\u5EFA", 0);					// 创建
-		for (int k = 0; k < NK_COUNT; k++)					// 方块 / 平面 / 时间 / 键盘输入 / 累加 / 运行输出
-			c->Add(NewItem(KindDef(k).Name, 100 + k));
+		for (int k = 0; k < nkKeys; k++)					// 方块 ... 运行输出 only; 键盘 / 鼠标 / 镜头 (nkKeys..) have their own sub menus
+		{
+			String Cap = KindName(k);
+			if (Cap.IsEmpty()) continue;					// never add a blank entry
+			c->Add(NewItem(Cap, 100 + k));
+		}
 		FMenu->Items->Add(c);
 		TMenuItem *e = NewItem(L"\u7F16\u8F91", 0);					// 编辑
 		FmiCopy   = NewItem(L"\u590D\u5236", 11);					// 复制
@@ -681,13 +1169,35 @@ private:
 		FmiGroup   = NewItem(L"\u6210\u7EC4", 21);				// 成组
 		FmiUngroup = NewItem(L"\u89E3\u7EC4", 22);				// 解组
 		g->Add(FmiGroup); g->Add(FmiUngroup);
-		//e->Add(g);
 		FMenu->Items->Add(e);
 		FMenu->Items->Add(g);
+		FMenu->Items->Add(NewItem(L"-", 0));			// separator: 键盘 / 鼠标 / 镜头 are written separately from 创建 / 编辑 / 组
+		FMenu->Items->Add(BuildKeyboardMenu());
+		FMenu->Items->Add(BuildMouseMenu());
+		FMenu->Items->Add(BuildCameraMenu());
+		{	// build marker (temporary): grey entry at the bottom of the right-click menu
+			TMenuItem *V = NewItem(String(L"rev 1525  \u521B\u5EFA\u83DC\u5355 ") + IntToStr(c->Count) + L" \u9879", 0);
+			V->Enabled = false;
+			FMenu->Items->Add(NewItem(L"-", 0));
+			FMenu->Items->Add(V);
+		}
+		PurgeBlankItems(FMenu->Items);
+	}
+
+	// delete every menu entry without a caption (also entries added from outside through ContextMenu)
+	void PurgeBlankItems(TMenuItem *Parent)
+	{
+		for (int i = Parent->Count - 1; i >= 0; i--)
+		{
+			TMenuItem *Mi = Parent->Items[i];
+			if (Mi->Count > 0) PurgeBlankItems(Mi);
+			if (Mi->Caption.Trim().IsEmpty()) Parent->Delete(i);
+		}
 	}
 
 	void ShowMenu(int X, int Y)
 	{
+		PurgeBlankItems(FMenu->Items);
 		FMenuWX = WX((float)X);
 		FMenuWY = WY((float)Y);
 		FmiCopy->Enabled   = SelCount() > 0;
@@ -811,10 +1321,11 @@ private:
 	// ---- rendering -------------------------------------------------------
 	void DrawNode(SDL_Renderer *R, const TNode &N, const THit &Hover)
 	{
+		if (NodeHidden(N)) return;			// inside a folded group
 		const TKindDef &D = KindDef(N.Kind);
 		float z = FZoom;
 		float x = SX(N.X), y = SY(N.Y);
-		float w = NODE_W * z, hh = HEAD_H * z, bh = ROW_H * RowsOf(N.Kind) * z;
+		float w = NODE_W * z, hh = HEAD_H * z, bh = N.Collapsed ? 0.0f : ROW_H * RowsOf(N.Kind) * z;
 		if (x > ClientWidth || x + w < 0 || y > ClientHeight || y + hh + bh < 0) return;
 		float rad = std::max(2.0f, 6.0f * z);
 		int hr = D.R, hg = D.G, hb = D.B;
@@ -822,7 +1333,7 @@ private:
 		std::vector<SDL_FPoint> P;
 		RoundPath(P, x, y, w, hh + bh, rad, rad);						// body
 		FillPoly(R, P, 44, 46, 52, 245);
-		RoundPath(P, x, y, w, hh, rad, 0.0f);							// header
+		RoundPath(P, x, y, w, hh, rad, N.Collapsed ? rad : 0.0f);							// header
 		FillPoly(R, P, hr, hg, hb, 255);
 		RoundPath(P, x, y, w, hh + bh, rad, rad);						// outline
 		if (N.Sel)
@@ -840,10 +1351,22 @@ private:
 			FTxt.Draw(R, N.Name, x + 10 * z, y + hh * 0.5f, std::min(ts, 40), true, 255, 255, 255, 0);
 
 		// pins
+		{	// fold indicator at the right end of the header: down = expanded, right = collapsed
+			std::vector<SDL_FPoint> T;
+			float ax = x + w - 12 * z, ay = y + hh * 0.5f, s = 4.0f * z;
+			SDL_FPoint a, b, c;
+			if (N.Collapsed) { a.x = ax - s * 0.5f; a.y = ay - s; b.x = ax - s * 0.5f; b.y = ay + s; c.x = ax + s; c.y = ay; }
+			else             { a.x = ax - s; a.y = ay - s * 0.5f; b.x = ax + s; b.y = ay - s * 0.5f; c.x = ax; c.y = ay + s; }
+			T.push_back(a); T.push_back(b); T.push_back(c);
+			FillPoly(R, T, 255, 255, 255, 200);
+		}
 		int ps = (int)(11 * z + 0.5f);
+		if (N.Kind == nkMouse && !N.Collapsed && ps >= 7)		// the mode is shown in the body (left side; X / Y pins are on the right)
+			FTxt.Draw(R, N.Val[0] > 0.5f ? String(L"\u4E0D\u70B9\u51FB\u63A7\u5236") : String(L"\u70B9\u51FB\u63A7\u5236"),
+					  x + 10 * z, y + hh + ROW_H * 0.5f * z, std::min(ps, 36), true, 255, 230, 140, 0);
 		for (int o = 0; o < 2; o++)
 		{
-			int cnt = o ? D.NOut : D.NIn;
+			int cnt = N.Collapsed ? 0 : (o ? D.NOut : D.NIn);
 			for (int k = 0; k < cnt; k++)
 			{
 				const TPinDef &PD = o ? D.Out[k] : D.In[k];
@@ -861,7 +1384,11 @@ private:
 				else     FillPoly(R, C, cr, cg, cb, 255);
 				if (ps >= 7)
 				{
-					if (o == 0) FTxt.Draw(R, PD.Name, px + (PIN_R + 6) * z, py, std::min(ps, 36), false, 220, 220, 220, 0);
+					if (o == 1 && N.Kind == nkValue)		// the output pin shows the value itself
+						FTxt.Draw(R, FloatToStrF(N.Val[0], ffGeneral, 5, 0), px - (PIN_R + 6) * z, py, std::min(ps, 36), true, 255, 230, 140, 1);
+					else if (o == 1 && N.Kind == nkKeys && k == 0)		// the first output shows which key this node reads
+						FTxt.Draw(R, String(KeyNameOf(N)) + L" \u6309\u4E0B", px - (PIN_R + 6) * z, py, std::min(ps, 36), true, 255, 230, 140, 1);
+					else if (o == 0) FTxt.Draw(R, PD.Name, px + (PIN_R + 6) * z, py, std::min(ps, 36), false, 220, 220, 220, 0);
 					else        FTxt.Draw(R, PD.Name, px - (PIN_R + 6) * z, py, std::min(ps, 36), false, 220, 220, 220, 1);
 				}
 			}
@@ -909,11 +1436,22 @@ private:
 			std::vector<SDL_FPoint> P;
 			RoundPath(P, x, y, fw, fh, rad, rad);
 			FillPoly(R, P, 90, 115, 160, 40);						// frame body
-			RoundPath(P, x, y, fw, th, rad, 0.0f);
+			bool folded = GroupFolded(FGroups[g].Id);
+			RoundPath(P, x, y, fw, th, rad, folded ? rad : 0.0f);
 			FillPoly(R, P, 90, 115, 160, 120);						// title bar
 			RoundPath(P, x, y, fw, fh, rad, rad);
 			if (sel) StrokePoly(R, P, 255, 170, 40, 255);
 			else     StrokePoly(R, P, 130, 160, 210, 200);
+			{	// fold arrow at the right end of the title bar (down = expanded, right = every node folded); double click the bar
+				bool allFolded = GroupFolded(FGroups[g].Id);
+				std::vector<SDL_FPoint> T;
+				float ax = x + fw - 12 * FZoom, ay = y + th * 0.5f, as = 4.0f * FZoom;
+				SDL_FPoint a, b, c;
+				if (allFolded) { a.x = ax - as * 0.5f; a.y = ay - as; b.x = ax - as * 0.5f; b.y = ay + as; c.x = ax + as; c.y = ay; }
+				else           { a.x = ax - as; a.y = ay - as * 0.5f; b.x = ax + as; b.y = ay - as * 0.5f; c.x = ax; c.y = ay + as; }
+				T.push_back(a); T.push_back(b); T.push_back(c);
+				FillPoly(R, T, 255, 255, 255, 200);
+			}
 			int gs = (int)(12 * FZoom + 0.5f);
 			if (gs >= 7)
 				FTxt.Draw(R, FGroups[g].Name, x + 10 * FZoom, y + th * 0.5f, std::min(gs, 40), true, 255, 255, 255, 0);
@@ -924,6 +1462,7 @@ private:
 		{
 			int a = FindNode(FLinks[i].From), b = FindNode(FLinks[i].To);
 			if (a < 0 || b < 0) continue;
+			if (FNodes[a].Group != 0 && FNodes[a].Group == FNodes[b].Group && NodeHidden(FNodes[a])) continue;		// link inside a folded group
 			float x0, y0, x3, y3;
 			PinPos(FNodes[a], true,  FLinks[i].FromPin, x0, y0);
 			PinPos(FNodes[b], false, FLinks[i].ToPin,   x3, y3);
@@ -967,8 +1506,8 @@ private:
 		}
 
 		// viewport name + zoom
-		char Buf[32];
-		sprintf(Buf, "2D  %d%%", (int)(FZoom * 100.0f + 0.5f));
+		char Buf[48];
+		sprintf(Buf, "2D  %d%%  [rev 1525  create-menu items: %d]", (int)(FZoom * 100.0f + 0.5f), FMenu ? FMenu->Items->Items[0]->Count : -1);		// must read 10; if not, the exe is stale
 		SDL_SetRenderDrawColor(R, 220, 220, 220, 255);
 		SDL_RenderDebugText(R, 8, 8, Buf);
 	}
@@ -988,7 +1527,11 @@ protected:
 		else if (Button == mbLeft)
 		{
 			THit H = HitTest(X, Y);
-			if (H.Kind == hkOut)
+			if (H.Kind == hkNode && ToggleOnDoubleClick(H.Node, X, Y))
+			{
+				FDrag = dgNone;			// double click on a header: folded / unfolded, no drag
+			}
+			else if (H.Kind == hkOut)
 			{
 				FDrag = dgLink; FLinkNode = H.Node; FLinkPin = H.Pin; FLinkFromOut = true;
 			}
@@ -1007,6 +1550,10 @@ protected:
 				{
 					FLinkNode = H.Node; FLinkPin = H.Pin; FLinkFromOut = false;
 				}
+			}
+			else if (H.Kind == hkGroup && ToggleGroupOnDoubleClick(H.Node, X, Y))
+			{
+				FDrag = dgNone;			// double click on a group title: fold / unfold its nodes
 			}
 			else if (H.Kind == hkGroup)			// title bar of a group frame: select all its nodes, drag moves them all
 			{
@@ -1087,7 +1634,8 @@ protected:
 				for (size_t i = 0; i < FNodes.size(); i++)
 				{
 					TNode &N = FNodes[i];
-					if (N.X < x1 && N.X + NODE_W > x0 && N.Y < y1 && N.Y + NodeH(N.Kind) > y0)
+					if (NodeHidden(N)) continue;
+					if (N.X < x1 && N.X + NODE_W > x0 && N.Y < y1 && N.Y + NodeHN(N) > y0)
 						N.Sel = true;
 				}
 			}
@@ -1107,7 +1655,7 @@ protected:
 	{
 		TPoint P = ScreenToClient(MousePos);
 		float f  = powf(1.1f, WheelDelta / 120.0f);
-		float nz = std::min(4.0f, std::max(0.2f, FZoom * f));
+		float nz = std::min(4.0f, std::max(0.1f, FZoom * f));
 		f = nz / FZoom;
 		float cx = ClientWidth * 0.5f, cy = ClientHeight * 0.5f;
 		FPanX = (P.x - cx) - (P.x - cx - FPanX) * f;		// the world point under the cursor stays put
@@ -1136,6 +1684,18 @@ protected:
 			if (Shift.Contains(ssShift)) UngroupSelected(); else GroupSelected();
 			Key = 0;
 		}
+		else if (!Shift.Contains(ssCtrl) && !Shift.Contains(ssAlt) && Key == 'Z')
+		{
+			LocateSelected(); Key = 0;		// Z: go to the current node
+		}
+		else if (!Shift.Contains(ssCtrl) && !Shift.Contains(ssAlt) && Key == 'F')
+		{
+			FitAll(); Key = 0;				// F: fit everything into the window
+		}
+		else if (!Shift.Contains(ssCtrl) && !Shift.Contains(ssAlt) && Key == 'X')
+		{
+			ZoomActual(); Key = 0;			// X: 100%
+		}
 		else if (Key == VK_F2)
 		{
 			int id = SingleSelected();
@@ -1151,9 +1711,11 @@ public:
 		  FLastX(0), FLastY(0), FDownX(0), FDownY(0), FMouseX(0), FMouseY(0),
 		  FLinkNode(0), FLinkPin(0), FLinkFromOut(true), FMenu(NULL), FmiCopy(NULL), FmiPaste(NULL), FmiRename(NULL),
 		  FmiGroup(NULL), FmiUngroup(NULL),
-		  FMenuWX(0), FMenuWY(0), FMenuNode(0), FMenuGroup(0), FRunT(0), FRunH(0), FRunV(0), FRunS(0)
+		  FMenuWX(0), FMenuWY(0), FMenuNode(0), FMenuGroup(0), FRunT(0), FRunH(0), FRunV(0), FRunS(0), FRunKeys(0), FRunMX(0), FRunMY(0), FCollide(true)
 	{
 		for (int k = 0; k < NK_COUNT; k++) FCounter[k] = 0;
+		for (int k = 0; k < 256; k++) FRunDown[k] = false;
+		FClickTick = 0; FClickNode = 0; FClickX = FClickY = 0;
 		OnRender = Render2D;
 		BuildMenu();
 	}
@@ -1166,9 +1728,42 @@ public:
 		return false;
 	}
 
+	// mouse node: -1 = none (the mouse does not move the camera), 0 = click + drag, 1 = no click needed
+	int MouseMode()
+	{
+		for (size_t i = 0; i < FNodes.size(); i++)
+			if (FNodes[i].Kind == nkMouse) return FNodes[i].Val[0] > 0.5f ? 1 : 0;
+		return -1;
+	}
+
+	// camera node: position in run-window coordinates (Y up); false when there is none. Call after RunStep.
+	bool GetRunCamera(float &x, float &y, float &z)
+	{
+		for (size_t i = 0; i < FNodes.size(); i++)
+			if (FNodes[i].Kind == nkCamera)
+			{
+				int id = FNodes[i].Id;
+				x = EvalIn(id, 0); y = EvalIn(id, 1); z = -EvalIn(id, 2);		// same Z convention as the objects
+				return true;
+			}
+		return false;
+	}
+
+	// the run window tells which single keys are down (bit 0..7 = W A S D Up Down Left Right); call before RunStep
+	void SetRunKeys(unsigned Mask) { FRunKeys = Mask; }
+	// mouse position in the run window: x / y in -1..1 from the window centre (right / up positive); read by the "Mouse" node outputs X / Y; call before RunStep
+	void SetRunMouse(float x, float y) { FRunMX = x; FRunMY = y; }
+	// Down[vk] = true while that virtual key is down (256 entries); read by the "Key" nodes
+	void SetRunKeyStates(const bool *Down) { for (int k = 0; k < 256; k++) FRunDown[k] = Down[k]; }
+
 	void RunReset()
 	{
 		FAccum.clear();
+		FJumpT.clear();
+		FCol.clear();
+		FGrav.clear();
+		FReqY.clear();
+		FJumpHeld.clear();
 	}
 
 	// t = seconds since the run started, dt = frame time, kh / kv / ks = keyboard (horizontal, vertical, space).
@@ -1178,10 +1773,46 @@ public:
 		Out.clear();
 		FRunT = t; FRunH = kh; FRunV = kv; FRunS = ks;
 		for (size_t i = 0; i < FNodes.size(); i++)			// integrate the accumulators
-			if (FNodes[i].Kind == nkAccum)
+			if (FNodes[i].Kind == nkAccum || FNodes[i].Kind == nkSub)
 			{
 				int id = FNodes[i].Id;
-				FAccum[id] += EvalIn(id, 0) * EvalIn(id, 1) * dt;
+				FAccum[id] += (FNodes[i].Kind == nkSub ? -1.0f : 1.0f) * EvalIn(id, 0) * EvalIn(id, 1) * dt;
+			}
+		//for (size_t i = 0; i < FNodes.size(); i++)			// jumps: start on the rising edge of the trigger, run to the end
+		//	if (FNodes[i].Kind == nkJump)
+		//	{
+		//		int id = FNodes[i].Id;
+		//		bool trig = EvalIn(id, 0) > 0.5f;
+		//		float &T = FJumpT.insert(std::make_pair(id, -1.0f)).first->second;
+		//		bool &Held = FJumpHeld[id];
+		//		if (T >= 0.0f)
+		//		{
+		//			T += dt;
+		//			if (T >= std::max(0.05f, EvalIn(id, 3))) T = -1.0f;
+		//		}
+		//		else if (trig && !Held)
+		//			T = 0.0f;
+		//		Held = trig;
+		//	}
+		for (size_t i = 0; i < FNodes.size(); i++)			// gravity: jump on the rising edge, fall, land on the ground
+			if (FNodes[i].Kind == nkGravity)
+			{
+				int id = FNodes[i].Id;
+				float ground = EvalIn(id, 3);
+				std::map<int, TGrav>::iterator it = FGrav.find(id);
+				if (it == FGrav.end())
+				{
+					TGrav G0; G0.Y = ground; G0.Vy = 0.0f; G0.On = true; G0.Held = false;
+					it = FGrav.insert(std::make_pair(id, G0)).first;
+				}
+				TGrav &G = it->second;
+				bool trig = EvalIn(id, 0) > 0.5f;
+				if (G.On && trig && !G.Held) { G.Vy = EvalIn(id, 1); G.On = false; }
+				G.Held = trig;
+				G.Vy -= EvalIn(id, 2) * dt;
+				G.Y  += G.Vy * dt;
+				if (G.Y <= ground) { G.Y = ground; if (G.Vy < 0.0f) G.Vy = 0.0f; G.On = true; }
+				else if (G.Vy != 0.0f) G.On = false;		// in the air; standing on a box is set again by the collision step
 			}
 		int OutId = 0;
 		for (size_t i = 0; i < FNodes.size(); i++)
@@ -1190,6 +1821,425 @@ public:
 		for (size_t i = 0; i < FLinks.size(); i++)
 			if (FLinks[i].To == OutId && FLinks[i].ToPin == 0)
 				BuildObj(FLinks[i].From, Out);
+		if (FCollide) ResolveCollisions(Out);
+	}
+
+	// Box-box collisions. Every frame an object moves by what the graph asks (its change since the last frame),
+	// starting from where it was resolved last frame; then overlapping boxes are pushed apart along the axis of
+	// least penetration. Only boxes that moved are pushed (a box nobody moves is a wall); if both moved, both give way.
+	// Planes are the ground and are not solid. Boxes are treated as axis-aligned boxes around their rotated footprint.
+	// the Gravity node that drives the height (pin 1) of this object node, or 0
+	int GravityOf(int ObjId)
+	{
+		for (size_t i = 0; i < FLinks.size(); i++)
+			if (FLinks[i].To == ObjId && FLinks[i].ToPin == 1)
+			{
+				int k = FindNode(FLinks[i].From);
+				if (k >= 0 && FNodes[k].Kind == nkGravity) return FNodes[k].Id;
+			}
+		return 0;
+	}
+
+	void ResolveCollisions(std::vector<TRunObj> &Objs)
+	{
+		size_t n = Objs.size();
+		std::vector<bool>  moved(n, false);
+		std::vector<float> hx(n, 0), hy(n, 0);
+		for (size_t i = 0; i < n; i++)
+		{
+			TRunObj &O = Objs[i];
+			std::map<int, TColState>::iterator it = FCol.find(O.Id);
+			TColState St;
+			St.Rx = O.X; St.Ry = O.Y; St.Rz = O.Z;
+			if (it != FCol.end())
+			{
+				float dx = O.X - it->second.Rx, dy = O.Y - it->second.Ry, dz = O.Z - it->second.Rz;
+				moved[i] = fabsf(dx) + fabsf(dy) + fabsf(dz) > 1e-5f;
+				O.X = it->second.Px + dx; O.Z = it->second.Pz + dz;
+				if (GravityOf(O.Id) == 0) O.Y = it->second.Py + dy;		// a gravity node gives the absolute height
+			}
+			St.Px = O.X; St.Py = O.Y; St.Pz = O.Z;
+			FCol[O.Id] = St;
+			FReqY[O.Id] = St.Ry;
+			float a = O.Rot * 3.14159265f / 180.0f, sc = fabsf(O.Scale);
+			hx[i] = 0.5f * sc * (fabsf(cosf(a)) + fabsf(sinf(a)));
+			hy[i] = 0.5f * sc;
+		}
+		for (int pass = 0; pass < 4; pass++)
+			for (size_t i = 0; i < n; i++)
+				for (size_t j = i + 1; j < n; j++)
+				{
+					TRunObj &A = Objs[i], &B = Objs[j];
+					if (A.Kind != nkBox || B.Kind != nkBox) continue;
+					if (!moved[i] && !moved[j]) continue;
+					float d[3]  = { B.X - A.X, B.Y - A.Y, B.Z - A.Z };
+					float ov[3] = { hx[i] + hx[j] - fabsf(d[0]), hy[i] + hy[j] - fabsf(d[1]), hx[i] + hx[j] - fabsf(d[2]) };
+					if (ov[0] <= 0 || ov[1] <= 0 || ov[2] <= 0) continue;
+					int ax = 0;
+					if (ov[1] < ov[ax]) ax = 1;
+					if (ov[2] < ov[ax]) ax = 2;
+					float push = ov[ax] * (d[ax] < 0 ? -1.0f : 1.0f);		// B moves by +push, A by -push
+					float fa = (moved[i] && !moved[j]) ? 1.0f : ((moved[j] && !moved[i]) ? 0.0f : 0.5f);
+					float *pa = ax == 0 ? &A.X : (ax == 1 ? &A.Y : &A.Z);
+					float *pb = ax == 0 ? &B.X : (ax == 1 ? &B.Y : &B.Z);
+					*pa -= push * fa;
+					*pb += push * (1.0f - fa);
+				}
+		for (size_t i = 0; i < n; i++)
+		{
+			TColState &St = FCol[Objs[i].Id];
+			St.Px = Objs[i].X; St.Py = Objs[i].Y; St.Pz = Objs[i].Z;
+			int g = GravityOf(Objs[i].Id);
+			if (g)			// feed the resolved height back: standing on a box = landed, bumping a ceiling = stop rising
+			{
+				std::map<int, TGrav>::iterator it = FGrav.find(g);
+				if (it != FGrav.end())
+				{
+					TGrav &G = it->second;
+					float req = FReqY[Objs[i].Id];
+					G.Y = Objs[i].Y;
+					if (Objs[i].Y > req + 1e-4f)      { if (G.Vy < 0.0f) G.Vy = 0.0f; G.On = true; }
+					else if (Objs[i].Y < req - 1e-4f) { if (G.Vy > 0.0f) G.Vy = 0.0f; }
+				}
+			}
+		}
+	}
+
+	// the "Create" panel: new node of this kind in the middle of the view (selected)
+	int CreateNodeAtCenter(int Kind)
+	{
+		float wx = WX(ClientWidth * 0.5f) - NODE_W * 0.5f, wy = WY(ClientHeight * 0.5f);
+		AddNode(Kind, wx, wy);
+		return FNodes.back().Id;
+	}
+
+	// ---- link to the 3D scene (used by SceneLink.h) -----------------------
+	struct TLinkInfo { int Id; int Kind; int Obj; String Name; float V[5]; };
+
+	// all Box / Plane nodes; V = value of the 5 inputs (stored value, or the pin default)
+	void GetLinkNodes(std::vector<TLinkInfo> &Out)
+	{
+		Out.clear();
+		for (size_t i = 0; i < FNodes.size(); i++)
+		{
+			const TNode &N = FNodes[i];
+			if (N.Kind != nkBox && N.Kind != nkPlane) continue;
+			TLinkInfo L;
+			L.Id = N.Id; L.Kind = N.Kind; L.Obj = N.Obj; L.Name = N.Name;
+			for (int k = 0; k < 5; k++) L.V[k] = N.HasVal ? N.Val[k] : KindDef(N.Kind).In[k].Def;
+			Out.push_back(L);
+		}
+	}
+
+	// new node for a 3D object; placed below the existing nodes, the selection is not changed
+	int AddLinkedNode(int Kind, const String &Name, int Obj, const float *V)
+	{
+		TNode N;
+		N.Id = FNextId++;
+		N.Kind = Kind;
+		N.Name = Name;
+		N.X = 0; N.Y = 0;
+		N.Group = 0; N.Sel = false; N.Collapsed = false;
+		N.Obj = Obj; N.HasVal = true;
+		for (int k = 0; k < 5; k++) N.Val[k] = V[k];
+		float minx = -300.0f, bottom = -240.0f;
+		if (!FNodes.empty())
+		{
+			minx = FNodes[0].X; bottom = FNodes[0].Y + NodeHN(FNodes[0]);
+			for (size_t i = 1; i < FNodes.size(); i++)
+			{
+				minx = std::min(minx, FNodes[i].X);
+				bottom = std::max(bottom, FNodes[i].Y + NodeHN(FNodes[i]));
+			}
+		}
+		N.X = minx;
+		N.Y = bottom + 40.0f;
+		++FCounter[Kind];
+		FNodes.push_back(N);
+		return N.Id;
+	}
+
+	void SetNodeObj(int Id, int Obj)
+	{
+		int i = FindNode(Id);
+		if (i >= 0) FNodes[i].Obj = Obj;
+	}
+
+	void SetNodeName(int Id, const String &Name)
+	{
+		int i = FindNode(Id);
+		if (i >= 0) FNodes[i].Name = Name;
+	}
+
+	void SetNodeVals(int Id, const float *V)
+	{
+		int i = FindNode(Id);
+		if (i < 0) return;
+		FNodes[i].HasVal = true;
+		for (int k = 0; k < 5; k++) FNodes[i].Val[k] = V[k];
+	}
+
+	void RemoveNode(int Id)
+	{
+		int i = FindNode(Id);
+		if (i < 0) return;
+		RemoveLinksOf(Id);
+		FNodes.erase(FNodes.begin() + i);
+		CleanGroups();
+	}
+
+	// select the nodes that belong to the given 3D object uids
+	void SelectNodesByObj(const std::vector<int> &Uids)
+	{
+		for (size_t i = 0; i < FNodes.size(); i++)
+			FNodes[i].Sel = FNodes[i].Obj != 0 &&
+				std::find(Uids.begin(), Uids.end(), FNodes[i].Obj) != Uids.end();
+	}
+
+	// ---- .yu file: save / open the node graph ------------------------------
+	// Text file, UTF-8, one record per line, fields separated by TAB:
+	//   YU <version>
+	//   view  zoom panX panY
+	//   ids   nextNodeId nextGroupId groupCounter
+	//   counters  c0 c1 ...                     (per node kind: used for the "方块 3" style names)
+	//   group id collapsed name
+	//   node  id kind x y group collapsed hasVal v0 v1 v2 v3 v4 name
+	//   link  fromNode fromPin toNode toPin
+	// The 3D objects are not stored separately: every Box / Plane object has a node (see SceneLink.h),
+	// so opening a file recreates the objects from the node values (name, position, rotation, size).
+	// Decimal numbers are always written with '.', whatever the Windows region is.
+
+	int NodeCount() { return (int)FNodes.size(); }
+
+	// empty graph, default view ("New")
+	void ClearGraph()
+	{
+		FNodes.clear(); FLinks.clear(); FGroups.clear();
+		FNextId = 1; FNextGroup = 1; FGroupCounter = 0;
+		for (int k = 0; k < NK_COUNT; k++) FCounter[k] = 0;
+		FZoom = 1.0f; FPanX = FPanY = 0.0f;
+		FDrag = dgNone; FClickNode = 0;
+		RunReset();
+	}
+
+private:
+	static String YuNum(float v)
+	{
+		TFormatSettings FS = TFormatSettings::Create(L"en-US");
+		return FloatToStrF((long double)v, ffGeneral, 9, 0, FS);
+	}
+
+	static float YuNumIn(const String &S, float Def)
+	{
+		TFormatSettings FS = TFormatSettings::Create(L"en-US");
+		return (float)StrToFloatDef(S.Trim(), (long double)Def, FS);
+	}
+
+	static String YuEsc(const String &S)
+	{
+		String R;
+		for (int i = 1; i <= S.Length(); i++)
+		{
+			wchar_t c = S[i];
+			if      (c == L'\\') R += L"\\\\";
+			else if (c == L'\t') R += L"\\t";
+			else if (c == L'\n') R += L"\\n";
+			else if (c == L'\r') R += L"\\r";
+			else                 R += c;
+		}
+		return R;
+	}
+
+	static String YuUnesc(const String &S)
+	{
+		String R;
+		for (int i = 1; i <= S.Length(); i++)
+		{
+			wchar_t c = S[i];
+			if (c == L'\\' && i < S.Length())
+			{
+				wchar_t d = S[++i];
+				R += (d == L't') ? L'\t' : (d == L'n') ? L'\n' : (d == L'r') ? L'\r' : d;
+			}
+			else R += c;
+		}
+		return R;
+	}
+
+	static void YuSplit(const String &Line, std::vector<String> &F)
+	{
+		F.clear();
+		int start = 1;
+		for (int i = 1; i <= Line.Length(); i++)
+			if (Line[i] == L'\t')
+			{
+				F.push_back(Line.SubString(start, i - start));
+				start = i + 1;
+			}
+		F.push_back(Line.SubString(start, Line.Length() - start + 1));
+	}
+
+public:
+	bool SaveToFile(const String &Path, String &Err)
+	{
+		try
+		{
+			std::unique_ptr<TStringList> L(new TStringList);
+			L->Add(L"YU\t1");
+			L->Add(L"view\t" + YuNum(FZoom) + L"\t" + YuNum(FPanX) + L"\t" + YuNum(FPanY));
+			L->Add(L"ids\t" + IntToStr(FNextId) + L"\t" + IntToStr(FNextGroup) + L"\t" + IntToStr(FGroupCounter));
+			String C = L"counters";
+			for (int k = 0; k < NK_COUNT; k++) C += L"\t" + IntToStr(FCounter[k]);
+			L->Add(C);
+			for (size_t i = 0; i < FGroups.size(); i++)
+				L->Add(L"group\t" + IntToStr(FGroups[i].Id) + L"\t" + IntToStr(FGroups[i].Collapsed ? 1 : 0) + L"\t" + YuEsc(FGroups[i].Name));
+			for (size_t i = 0; i < FNodes.size(); i++)
+			{
+				const TNode &N = FNodes[i];
+				String S = L"node\t" + IntToStr(N.Id) + L"\t" + IntToStr(N.Kind) + L"\t" + YuNum(N.X) + L"\t" + YuNum(N.Y) +
+						   L"\t" + IntToStr(N.Group) + L"\t" + IntToStr(N.Collapsed ? 1 : 0) + L"\t" + IntToStr(N.HasVal ? 1 : 0);
+				for (int k = 0; k < 5; k++) S += L"\t" + YuNum(N.Val[k]);
+				S += L"\t" + YuEsc(N.Name);
+				L->Add(S);
+			}
+			for (size_t i = 0; i < FLinks.size(); i++)
+				L->Add(L"link\t" + IntToStr(FLinks[i].From) + L"\t" + IntToStr(FLinks[i].FromPin) + L"\t" +
+					   IntToStr(FLinks[i].To) + L"\t" + IntToStr(FLinks[i].ToPin));
+			L->SaveToFile(Path, TEncoding::UTF8);
+			return true;
+		}
+		catch (Exception &E)
+		{
+			Err = E.Message;
+			return false;
+		}
+	}
+
+	// the current graph stays untouched when the file cannot be read
+	bool LoadFromFile(const String &Path, String &Err)
+	{
+		std::vector<TNode>  Nodes;
+		std::vector<TLink>  Links;
+		std::vector<TGroup> Groups;
+		int nextId = 1, nextGroup = 1, groupCounter = 0;
+		int counters[NK_COUNT];
+		for (int k = 0; k < NK_COUNT; k++) counters[k] = 0;
+		float zoom = 1.0f, panX = 0.0f, panY = 0.0f;
+		int skipped = 0;
+		try
+		{
+			std::unique_ptr<TStringList> L(new TStringList);
+			L->LoadFromFile(Path, TEncoding::UTF8);
+			if (L->Count == 0) { Err = L"\u6587\u4EF6\u662F\u7A7A\u7684"; return false; }
+			std::vector<String> F;
+			YuSplit(L->Strings[0], F);
+			if (F.size() < 2 || F[0] != L"YU") { Err = L"\u4E0D\u662F\u6709\u6548\u7684 .yu \u6587\u4EF6"; return false; }
+			if (StrToIntDef(F[1], 0) > 1) { Err = L"\u6587\u4EF6\u7248\u672C\u592A\u65B0\uFF0C\u8BF7\u4F7F\u7528\u65B0\u7248\u672C\u7A0B\u5E8F\u6253\u5F00"; return false; }
+
+			for (int i = 1; i < L->Count; i++)
+			{
+				YuSplit(L->Strings[i], F);
+				if (F.empty()) continue;
+				const String &T = F[0];
+				if (T == L"view" && F.size() >= 4)
+				{
+					zoom = std::min(4.0f, std::max(0.1f, YuNumIn(F[1], 1.0f)));
+					panX = YuNumIn(F[2], 0.0f); panY = YuNumIn(F[3], 0.0f);
+				}
+				else if (T == L"ids" && F.size() >= 4)
+				{
+					nextId = StrToIntDef(F[1], 1); nextGroup = StrToIntDef(F[2], 1); groupCounter = StrToIntDef(F[3], 0);
+				}
+				else if (T == L"counters")
+				{
+					for (int k = 0; k < NK_COUNT && (size_t)(k + 1) < F.size(); k++) counters[k] = StrToIntDef(F[k + 1], 0);
+				}
+				else if (T == L"group" && F.size() >= 4)
+				{
+					TGroup G;
+					G.Id = StrToIntDef(F[1], 0); G.Collapsed = StrToIntDef(F[2], 0) != 0; G.Name = YuUnesc(F[3]);
+					if (G.Id > 0) Groups.push_back(G);
+				}
+				else if (T == L"node" && F.size() >= 13)
+				{
+					TNode N;
+					N.Id    = StrToIntDef(F[1], 0);
+					N.Kind  = StrToIntDef(F[2], -1);
+					N.X = YuNumIn(F[3], 0.0f); N.Y = YuNumIn(F[4], 0.0f);
+					N.Group = StrToIntDef(F[5], 0);
+					N.Collapsed = StrToIntDef(F[6], 0) != 0;
+					N.HasVal    = StrToIntDef(F[7], 0) != 0;
+					for (int k = 0; k < 5; k++) N.Val[k] = YuNumIn(F[8 + k], 0.0f);
+					N.Name = (F.size() > 13) ? YuUnesc(F[13]) : String(L"");
+					N.Obj = 0; N.Sel = false;			// the 3D object is created again by SceneLink
+					bool dup = false;
+					for (size_t k = 0; k < Nodes.size(); k++) if (Nodes[k].Id == N.Id) dup = true;
+					if (N.Id > 0 && N.Kind >= 0 && N.Kind < NK_COUNT && !dup)
+					{
+						if (N.Name.IsEmpty()) N.Name = KindName(N.Kind);
+						Nodes.push_back(N);
+					}
+					else skipped++;
+				}
+				else if (T == L"link" && F.size() >= 5)
+				{
+					TLink K;
+					K.From = StrToIntDef(F[1], 0); K.FromPin = StrToIntDef(F[2], -1);
+					K.To   = StrToIntDef(F[3], 0); K.ToPin   = StrToIntDef(F[4], -1);
+					Links.push_back(K);
+				}
+			}
+		}
+		catch (Exception &E)
+		{
+			Err = E.Message;
+			return false;
+		}
+
+		// ---- commit ----
+		ClearGraph();
+		FGroups = Groups;
+		FNodes  = Nodes;
+		int maxId = 0, maxGroup = 0;
+		for (size_t i = 0; i < FNodes.size(); i++)
+		{
+			maxId = std::max(maxId, FNodes[i].Id);
+			if (FNodes[i].Group != 0 && FindGroup(FNodes[i].Group) < 0) FNodes[i].Group = 0;
+		}
+		for (size_t i = 0; i < FGroups.size(); i++) maxGroup = std::max(maxGroup, FGroups[i].Id);
+		FNextId = std::max(nextId, maxId + 1);
+		FNextGroup = std::max(nextGroup, maxGroup + 1);
+		FGroupCounter = groupCounter;
+		for (int k = 0; k < NK_COUNT; k++) FCounter[k] = counters[k];
+		FZoom = zoom; FPanX = panX; FPanY = panY;
+
+		for (size_t i = 0; i < Links.size(); i++)			// same rules as TryLink: valid pins, equal types, no cycles
+		{
+			const TLink &K = Links[i];
+			int io = FindNode(K.From), ii = FindNode(K.To);
+			if (io < 0 || ii < 0 || K.From == K.To) { skipped++; continue; }
+			const TKindDef &DO = KindDef(FNodes[io].Kind), &DI = KindDef(FNodes[ii].Kind);
+			if (K.FromPin < 0 || K.FromPin >= DO.NOut || K.ToPin < 0 || K.ToPin >= DI.NIn) { skipped++; continue; }
+			if (DO.Out[K.FromPin].Type != DI.In[K.ToPin].Type) { skipped++; continue; }
+			std::set<int> Seen;
+			if (Reaches(K.To, K.From, Seen)) { skipped++; continue; }
+			bool same = false, taken = false;
+			for (size_t j = 0; j < FLinks.size(); j++)
+			{
+				if (FLinks[j].To == K.To && FLinks[j].ToPin == K.ToPin)
+				{
+					if (FLinks[j].From == K.From && FLinks[j].FromPin == K.FromPin) same = true;
+					else if (DI.In[K.ToPin].Type == ptNumber) taken = true;		// a number input takes one link
+				}
+			}
+			if (same || taken) { skipped++; continue; }
+			FLinks.push_back(K);
+		}
+		CleanGroups();
+		ClearSel();
+		if (skipped > 0) Err = L"\u6709 " + IntToStr(skipped) + L" \u9879\u5185\u5BB9\u65E0\u6CD5\u8BC6\u522B\uFF0C\u5DF2\u8DF3\u8FC7";		// warning only: the file was opened
+		else Err = L"";
+		return true;
 	}
 
 	__property float GridStep   = { read = FStep,       write = FStep };

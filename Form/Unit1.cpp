@@ -1,4 +1,4 @@
-﻿//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 
 #include <vcl.h>
 #pragma hdrstop
@@ -26,6 +26,232 @@
 #pragma link "JvDockVSNetStyle"
 #pragma resource "*.dfm"
 TForm1 *Form1;
+
+
+//---------------------------------------------------------------------------
+// Dark mode for the Open / Save dialogs. These are the system's own dialogs (Windows has no official dark file dialog),
+// so only what Windows allows is switched: while a dialog is open a thread-local hook gives the dialog window a dark
+// title bar (DWM immersive dark mode) and the DarkMode_Explorer visual style. The dialog contents follow the process
+// dark mode (SetAppDarkMode, see ApplyTheme), as far as the installed Windows version supports it.
+// Controls are deliberately NOT touched one by one: that broke the layout of the old-style dialog.
+typedef HRESULT (WINAPI *TDlgDwmFn)(HWND, DWORD, LPCVOID, DWORD);
+typedef HRESULT (WINAPI *TDlgThemeFn)(HWND, LPCWSTR, LPCWSTR);
+static TDlgDwmFn   g_DlgDwm   = NULL;
+static TDlgThemeFn g_DlgTheme = NULL;
+static bool        g_DlgApiTried = false;
+
+static void LoadDarkDlgApi()
+{
+	if (g_DlgApiTried) return;
+	g_DlgApiTried = true;
+	HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
+	HMODULE hUx  = LoadLibraryW(L"uxtheme.dll");
+	if (hDwm) g_DlgDwm   = reinterpret_cast<TDlgDwmFn>(GetProcAddress(hDwm, "DwmSetWindowAttribute"));
+	if (hUx)  g_DlgTheme = reinterpret_cast<TDlgThemeFn>(GetProcAddress(hUx, "SetWindowTheme"));
+}
+
+static LRESULT CALLBACK DarkDlgHookProc(int Code, WPARAM W, LPARAM L)
+{
+	if (Code == HC_ACTION && L)
+	{
+		const CWPRETSTRUCT *M = reinterpret_cast<const CWPRETSTRUCT*>(L);
+		if (M->message == WM_SHOWWINDOW && M->wParam && !(GetWindowLongW(M->hwnd, GWL_STYLE) & WS_CHILD))
+		{
+			wchar_t Cls[16];
+			GetClassNameW(M->hwnd, Cls, 16);
+			if (!wcscmp(Cls, L"#32770"))
+			{
+				BOOL On = TRUE;
+				if (g_DlgDwm)
+				{
+					g_DlgDwm(M->hwnd, 20, &On, sizeof(On));		// DWMWA_USE_IMMERSIVE_DARK_MODE
+					g_DlgDwm(M->hwnd, 19, &On, sizeof(On));		// early Windows 10 builds
+				}
+				if (g_DlgTheme) g_DlgTheme(M->hwnd, L"DarkMode_Explorer", NULL);
+			}
+		}
+	}
+	return CallNextHookEx(NULL, Code, W, L);
+}
+
+// lives while a dialog is open
+struct TDarkDialogScope
+{
+	explicit TDarkDialogScope(bool Dark) : FHook(NULL)
+	{
+		if (!Dark) return;
+		LoadDarkDlgApi();
+		FHook = SetWindowsHookExW(WH_CALLWNDPROCRET, DarkDlgHookProc, NULL, GetCurrentThreadId());
+	}
+	~TDarkDialogScope() { if (FHook) UnhookWindowsHookEx(FHook); }
+	HHOOK FHook;
+};
+//---------------------------------------------------------------------------
+// ".yu" project file: New / Open / Save / Save as for the node graph (and with it the 3D objects, see SceneLink.h).
+// Self-contained helper: Unit1.h does not need to change. Created in the form constructor, wired to
+// ToolButton1 (New), ToolButton3 (Open), ToolButton5 (Save).
+class TProjectFile : public TObject
+{
+private:
+	TForm        *FForm;
+	TViewport2D  *FGraph;
+	String        FPath;			// "" = not saved yet
+	bool          FDarkTheme;		// dark theme active: the file dialogs are darkened
+	static void AddYuFileType(TFileTypeItems *Types)
+	{
+		TFileTypeItem *T = Types->Add();
+		T->DisplayName = L"YU 文件 (*.yu)";
+		T->FileMask    = L"*.yu";
+		T = Types->Add();
+		T->DisplayName = L"所有文件 (*.*)";
+		T->FileMask    = L"*.*";
+	}
+
+
+	void UpdateCaption()
+	{
+		String Doc = FPath.IsEmpty() ? String(L"未命名") : ExtractFileName(FPath);		// file name (with .yu)
+		FForm->Caption = L"3DGameEngine-" + Doc;
+	}
+
+	bool WriteTo(const String &Path)
+	{
+		String Err;
+		if (!FGraph->SaveToFile(Path, Err))
+		{
+			MessageDlg(L"保存失败：\n" + Err, mtError, TMsgDlgButtons() << mbOK, 0);
+			return false;
+		}
+		FPath = Path;
+		UpdateCaption();
+		return true;
+	}
+
+	// true = go on (saved, or the user does not want to keep the old content); false = cancelled
+	bool ConfirmDiscard()
+	{
+		if (FGraph->NodeCount() == 0) return true;
+		int R = MessageDlg(L"当前内容是否先保存？", mtConfirmation, TMsgDlgButtons() << mbYes << mbNo << mbCancel, 0);
+		if (R == mrCancel) return false;
+		if (R == mrYes) return DoSave(false);
+		return true;
+	}
+
+public:
+	__fastcall TProjectFile(TForm *Form, TViewport2D *Graph) : FForm(Form), FGraph(Graph), FDarkTheme(true) { UpdateCaption(); }
+
+	void SetDark(bool ADark) { FDarkTheme = ADark; }
+
+	// SaveAs = true always asks for a file name
+	bool DoSave(bool SaveAs)
+	{
+		if (!SaveAs && !FPath.IsEmpty())
+			return WriteTo(FPath);
+		std::unique_ptr<TFileSaveDialog> D(new TFileSaveDialog(FForm));		// Vista-style dialog (follows the process dark mode better)
+		D->Title            = L"保存";
+		D->DefaultExtension = L"yu";
+		AddYuFileType(D->FileTypes);
+		D->Options          = D->Options << fdoOverWritePrompt << fdoPathMustExist;
+		if (!FPath.IsEmpty()) { D->DefaultFolder = ExtractFilePath(FPath); D->FileName = ExtractFileName(FPath); }
+		TDarkDialogScope Dark(FDarkTheme);
+		if (!D->Execute()) return false;
+		return WriteTo(D->FileName);
+	}
+
+	void OpenPath(const String &Path)
+	{
+		String Err;
+		if (!FGraph->LoadFromFile(Path, Err))
+		{
+			MessageDlg(L"打开失败：\n" + Err, mtError, TMsgDlgButtons() << mbOK, 0);
+			return;
+		}
+		FPath = Path;
+		UpdateCaption();
+		if (!Err.IsEmpty())			// opened, but something was skipped
+			MessageDlg(Err, mtWarning, TMsgDlgButtons() << mbOK, 0);
+	}
+
+	void __fastcall NewFile(TObject *Sender)
+	{
+		if (!ConfirmDiscard()) return;
+		FGraph->ClearGraph();		// SceneLink removes the matching 3D objects within 100 ms
+		FPath = L"";
+		UpdateCaption();
+	}
+
+	void __fastcall OpenFile(TObject *Sender)
+	{
+		if (!ConfirmDiscard()) return;
+		std::unique_ptr<TFileOpenDialog> D(new TFileOpenDialog(FForm));
+		D->Title            = L"打开";
+		D->DefaultExtension = L"yu";
+		AddYuFileType(D->FileTypes);
+		D->Options          = D->Options << fdoFileMustExist << fdoPathMustExist;
+		bool Ok;
+		{
+			TDarkDialogScope Dark(FDarkTheme);
+			Ok = D->Execute();
+		}
+		if (Ok) OpenPath(D->FileName);
+	}
+
+	void __fastcall SaveFile(TObject *Sender)   { DoSave(false); }
+	void __fastcall SaveFileAs(TObject *Sender) { DoSave(true); }
+
+	// ---- the "文件" menu of a main menu: 新建 / 打开 / 保存 / 另存为 ----
+	// The menu items come from the .dfm, so they are found by caption (ignoring "&", "(N)" and "..."); an entry that
+	// does not exist yet is created. Every entry gets its click handler and a Ctrl shortcut if it has none.
+	static String PlainCaption(const String &Cap)
+	{
+		String S = StringReplace(Cap, L"&", L"", TReplaceFlags() << rfReplaceAll);
+		int p = S.Pos(L"(");
+		if (p > 1) S = S.SubString(1, p - 1);
+		p = S.Pos(L"...");
+		if (p > 1) S = S.SubString(1, p - 1);
+		p = S.Pos(L"\u2026");
+		if (p > 1) S = S.SubString(1, p - 1);
+		return S.Trim();
+	}
+
+	void AttachMenu(TMainMenu *Menu)
+	{
+		if (!Menu) return;
+		TMenuItem *Top = NULL;
+		for (int i = 0; i < Menu->Items->Count && !Top; i++)
+		{
+			String C = PlainCaption(Menu->Items->Items[i]->Caption);
+			if (C == L"文件" || SameText(C, L"File")) Top = Menu->Items->Items[i];
+		}
+		if (!Top) return;
+
+		static const wchar_t *Cn[4]  = { L"新建", L"打开", L"保存", L"另存为" };
+		static const wchar_t *En[4]  = { L"New", L"Open", L"Save", L"Save As" };
+		static const wchar_t *Key[4] = { L"Ctrl+N", L"Ctrl+O", L"Ctrl+S", L"Ctrl+Shift+S" };
+		for (int k = 0; k < 4; k++)
+		{
+			TMenuItem *Mi = NULL;
+			for (int i = 0; i < Top->Count && !Mi; i++)
+			{
+				String C = PlainCaption(Top->Items[i]->Caption);
+				if (C == Cn[k] || SameText(C, En[k])) Mi = Top->Items[i];
+			}
+			if (!Mi)
+			{
+				Mi = new TMenuItem(Top);
+				Mi->Caption = Cn[k];
+				Top->Insert(std::min(k, Top->Count), Mi);
+			}
+			if      (k == 0) Mi->OnClick = NewFile;
+			else if (k == 1) Mi->OnClick = OpenFile;
+			else if (k == 2) Mi->OnClick = SaveFile;
+			else             Mi->OnClick = SaveFileAs;
+			Mi->Enabled = true;
+			if (Mi->ShortCut == 0) Mi->ShortCut = TextToShortCut(Key[k]);
+		}
+	}
+};
+static TProjectFile *g_ProjectFile = NULL;
 //---------------------------------------------------------------------------
 // ====================== CAD 风格命令行面板 ======================
 // Input 面板使用 TEdit 输入命令，按 Enter 执行；执行结果输出到 Output 面板。
@@ -502,6 +728,7 @@ class TCreateDockControls : public TPanel
 {
 private:
     TViewport3D *FView;
+    TViewport2D *FGraph;		// the 2D node graph (for the "数值" button)
     TLabel *FTitle;
     TLabel *FHint;
     TLabel *FStatus;
@@ -521,8 +748,10 @@ private:
             FButtons[0]->SetBounds(10, 38, ColW, 38);
             FButtons[1]->SetBounds(20 + ColW, 38, ColW, 38);
         }
-        if (FHint) FHint->SetBounds(10, 84, W - 20, 44);
-        if (FStatus) FStatus->SetBounds(10, 132, W - 20, 42);
+        if (FButtons.size() >= 3)
+            FButtons[2]->SetBounds(10, 82, ColW, 38);		// 数值 (node of the 2D graph)
+        if (FHint) FHint->SetBounds(10, 128, W - 20, 44);
+        if (FStatus) FStatus->SetBounds(10, 176, W - 20, 42);
     }
 
     void __fastcall UpdateButtonColors()
@@ -592,14 +821,26 @@ private:
                     FStatus->Caption = Obj ? (L"已创建：" + Obj->Name) : L"创建平面失败。";
                 break;
             }
+            case 2:		// 数值: a constant node of the 2D graph (double click its body to edit the number)
+            {
+                if (FGraph)
+                {
+                    FGraph->CreateNodeAtCenter(nkValue);
+                    if (FStatus) FStatus->Caption = L"已在 2D 视图中创建：数值（双击节点主体修改数值）";
+                    FGraph->Invalidate();
+                }
+                break;
+            }
         }
         FView->Invalidate();
         if (FView->CanFocus()) FView->SetFocus();
     }
 
 public:
-    __fastcall TCreateDockControls(TComponent *Owner, TWinControl *ParentWnd, TViewport3D *View)
-        : TPanel(Owner), FView(View), FTitle(NULL), FHint(NULL), FStatus(NULL), FHotButton(NULL), FDark(true)
+    void __fastcall SetGraph(TViewport2D *G) { FGraph = G; }
+
+    __fastcall TCreateDockControls(TComponent *Owner, TWinControl *ParentWnd, TViewport3D *View, TViewport2D *Graph = NULL)
+        : TPanel(Owner), FView(View), FGraph(Graph), FTitle(NULL), FHint(NULL), FStatus(NULL), FHotButton(NULL), FDark(true)
     {
         Parent = ParentWnd;
         Align = alClient;
@@ -617,6 +858,7 @@ public:
 
         AddButton(L"+  方体", 0);
         AddButton(L"+  平面", 1);
+        AddButton(L"+  数值", 2);
 
         FHint = new TLabel(this);
         FHint->Parent = this;
@@ -670,12 +912,12 @@ static void ApplyCreateDockControlsTheme(bool ADark)
         g_CreateDockControls->ApplyTheme(ADark);
 }
 
-static void InitCreateDockControls(TForm *DockForm, TViewport3D *View)
+static void InitCreateDockControls(TForm *DockForm, TViewport3D *View, TViewport2D *Graph)
 {
     if (!DockForm || !View || g_CreateDockControls)
         return;
     // Owner/Parent are the dock form, but this is called only after LayoutDockForms().
-    g_CreateDockControls = new TCreateDockControls(DockForm, DockForm, View);
+    g_CreateDockControls = new TCreateDockControls(DockForm, DockForm, View, Graph);
     DockForm->Realign();
     g_CreateDockControls->ApplyTheme(true);
     g_CreateDockControls->BringToFront();
@@ -1643,6 +1885,7 @@ void __fastcall TForm1::ToolBarVisibilityMenuClick(TObject *Sender)
 void __fastcall TForm1::ApplyTheme(bool ADark)
 {
 	FDark = ADark;
+	if (g_ProjectFile) g_ProjectFile->SetDark(ADark);		// file dialogs follow the theme
 
 	// Switch to the style whose popup-menu frame has the colour of the active theme.
 	// This must happen BEFORE the colours below are set (a style change can repaint everything).
@@ -2446,7 +2689,7 @@ void __fastcall TForm1::FormShow(TObject *Sender)
 	// Create child HWNDs after JvDocking has finished the initial reparent/handle recreation.
 	if (!g_CreateDockControls && FCreateForm && FSdl)
 	{
-		InitCreateDockControls(FCreateForm, FSdl);
+		InitCreateDockControls(FCreateForm, FSdl, FSdl2);
 		ApplyCreateDockControlsTheme(FDark);
 		FCreateForm->Invalidate();
 	}
@@ -3435,7 +3678,7 @@ void __fastcall TForm1::ApplyDockTheme()
 //---------------------------------------------------------------------------
 void __fastcall TForm1::FormCreate(TObject *Sender)
 {
-	Caption = "3DGameEngine-Project1-Document1";
+	Caption = L"3DGameEngine-未命名";
 
 	// Click on the first custom title-bar button ("Dark") toggles the theme
 	TitleBarPanel1->CustomButtons->Items[0]->OnClick = TitleBarPanel1CustomButtons0Click;
@@ -3502,7 +3745,21 @@ void __fastcall TForm1::FormCreate(TObject *Sender)
 	FSdl2->Align  = alClient;
 	FSdl2->ContextMenu->OwnerDraw = true;		// right-click menu of the 2D node editor follows the theme like the other menus
 	HookMenuItems(FSdl2->ContextMenu->Items);
-	SetViewMode(FViewMode);          // show the view that matches the toolbar (3D at start)
+	// .yu files: New / Open / Save on the first toolbar
+	g_ProjectFile = new TProjectFile(this, FSdl2);
+	ToolButton1->OnClick = g_ProjectFile->NewFile;
+	ToolButton3->OnClick = g_ProjectFile->OpenFile;
+	ToolButton5->OnClick = g_ProjectFile->SaveFile;
+	g_ProjectFile->AttachMenu(MainMenu1);		// 文件 menu: 新建 / 打开 / 保存 / 另存为
+	g_ProjectFile->AttachMenu(MainMenu2);
+	HookMenuItems(MainMenu1->Items);			// owner-draw handlers for entries that were just created
+	HookMenuItems(MainMenu2->Items);
+	if (g_CreateDockControls) g_CreateDockControls->SetGraph(FSdl2);
+	SetViewMode(FViewMode);				// show the view that matches the toolbar (3D at start)
+	SceneLink::Sync(FSdl, FSdl2);			// 3D objects -> 2D nodes right at the start
+	TTimer *LinkTimer = new TTimer(this);	// then every 100 ms: changes on either side are mirrored
+	LinkTimer->Interval = 100;
+	LinkTimer->OnTimer  = SceneLinkTick;
 	InitPropertyPanel();
 	InitFileTree();
 
@@ -3651,6 +3908,11 @@ void __fastcall TForm1::ShowProperties()
 		else
 			ActiveControl = NULL;
 	}
+}
+//---------------------------------------------------------------------------
+void __fastcall TForm1::SceneLinkTick(TObject *Sender)
+{
+	SceneLink::Sync(FSdl, FSdl2);
 }
 //---------------------------------------------------------------------------
 void __fastcall TForm1::ViewportSelect(TObject *Sender)

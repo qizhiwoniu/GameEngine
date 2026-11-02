@@ -94,6 +94,7 @@ struct TSceneObj
 	Vec3   Half;		// half size
 	Vec3   Rot;			// Euler rotation in radians (X, Y, Z)
 	int    R, G, B;		// object color
+	int    Uid;			// unique id: links the object to its node in the 2D view (TViewport2D)
 };
 //---------------------------------------------------------------------------
 // The scene camera used by the "Camera" view (fixed for now; later it can come from a camera object)
@@ -128,6 +129,7 @@ private:
 	bool  FCmdPrev[vcCount];		// configurable view hotkeys
 	TMessageEvent FOldOnMessage;
 	// ---- scene + selection ----
+	int FNextUid;
 	std::vector<TSceneObj> FObjs;
 	std::vector<int> FSelectedObjs;	// all selected objects; FSelected remains the active/primary one
 	std::vector<TSceneObj> FClipboardObjs;
@@ -2029,6 +2031,7 @@ private:
 public:
 	__fastcall TViewport3D(TComponent *Owner) : TSDLPanel(Owner)
 	{
+		FNextUid = 1;
 		FFov = 0.9f;				// about 51 degrees
 		FShowGrid = true;
 		FLastX = FLastY = 0;
@@ -2118,6 +2121,7 @@ public:
 		TSceneObj o;
 		o.Name = Name; o.Kind = L"Box"; o.Pos = Pos; o.Half = Half; o.Rot = V3(0, 0, 0);
 		o.R = R; o.G = G; o.B = B;
+		o.Uid = FNextUid++;
 		FObjs.push_back(o);
 	}
 
@@ -2170,6 +2174,7 @@ public:
 		for (size_t I = 0; I < FClipboardObjs.size(); ++I)
 		{
 			TSceneObj Copy = FClipboardObjs[I];
+			Copy.Uid = FNextUid++;
 			Copy.Name = NextObjectName(Copy.Kind.IsEmpty() ? L"Box" : Copy.Kind);
 			Copy.Pos = Copy.Pos + Offset;
 			FObjs.push_back(Copy);
@@ -2227,6 +2232,52 @@ public:
 	bool __fastcall GetSnapEnabled() { return FSnapOn; }
 	__property bool SnapEnabled = { read = GetSnapEnabled };
 	__property TNotifyEvent OnSnapToggled = { read = FOnSnapToggled, write = FOnSnapToggled };
+
+	// ---- link to the 2D node graph (see SceneLink.h) ----
+	int __fastcall AddSceneObject(TSceneObj O)		// returns the new uid
+	{
+		O.Uid = FNextUid++;
+		FObjs.push_back(O);
+		return O.Uid;
+	}
+
+	int __fastcall IndexOfUid(int Uid) const
+	{
+		for (size_t i = 0; i < FObjs.size(); ++i)
+			if (FObjs[i].Uid == Uid) return (int)i;
+		return -1;
+	}
+
+	bool __fastcall RemoveObjectByUid(int Uid)
+	{
+		if (FTransformDragging) return false;		// not while an object is being dragged: try again later
+		int Idx = IndexOfUid(Uid);
+		if (Idx < 0) return false;
+		FObjs.erase(FObjs.begin() + Idx);
+		std::vector<int> Sel;
+		for (size_t i = 0; i < FSelectedObjs.size(); ++i)
+		{
+			int v = FSelectedObjs[i];
+			if (v == Idx) continue;
+			Sel.push_back(v > Idx ? v - 1 : v);
+		}
+		bool Changed = (Sel != FSelectedObjs);
+		FSelectedObjs = Sel;
+		FSelected = Sel.empty() ? -1 : Sel.back();
+		if (Changed && FOnSelect)
+			FOnSelect(this);
+		return true;
+	}
+
+	void __fastcall GetSelectedUids(std::vector<int> &Out) const
+	{
+		Out.clear();
+		for (size_t i = 0; i < FSelectedObjs.size(); ++i)
+		{
+			int v = FSelectedObjs[i];
+			if (v >= 0 && v < (int)FObjs.size()) Out.push_back(FObjs[v].Uid);
+		}
+	}
 
 	int __fastcall ObjectCount() { return (int)FObjs.size(); }
 	const TSceneObj& __fastcall Obj(int I) { return FObjs[I]; }

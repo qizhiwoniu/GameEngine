@@ -205,6 +205,10 @@
             <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
             <BuildOrder>15</BuildOrder>
         </None>
+        <None Include="Core\SceneLink.h">
+            <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
+            <BuildOrder>17</BuildOrder>
+        </None>
         <None Include="Core\StartWindow.h">
             <VirtualFolder>{4A896467-AEF2-412D-943A-F0C70C68024D}</VirtualFolder>
             <BuildOrder>16</BuildOrder>

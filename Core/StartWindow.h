@@ -1,4 +1,4 @@
-﻿//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 // RunWindow.h - the "Run" window: renders the animated scene described by the node graph
 //
 // Header-only: #include "RunWindow.h" in Unit1.h (after Viewport2D.h) and call
@@ -12,6 +12,8 @@
 //     A / D or Left / Right  -> "Keyboard input" output Horizontal  (-1 .. 1)
 //     W / S or Up / Down     -> "Keyboard input" output Vertical    (-1 .. 1)
 //     Space                  -> "Keyboard input" output Space       (0 / 1)
+//     W A S D Up Down Left Right -> the "Keys" node, one output per key (0 / 1)
+// Mouse: left drag orbits the camera, the wheel zooms; right click = menu (mouse control on / off, reset camera)
 //---------------------------------------------------------------------------
 #ifndef StartWindowH
 #define StartWindowH
@@ -42,6 +44,16 @@ private:
 	float FRx, FRy, FRz, FUx, FUy, FUz, FFx, FFy, FFz;		// right / up / forward
 	float FCx, FCy, FFocal;						// screen centre, focal length in pixels
 
+	// mouse-controlled orbit camera around (0, 0.8, 0): left drag = orbit, wheel = zoom (right-click menu: on / off, reset)
+	bool  FMouseLook, FOrbit;
+	int   FMouseMode;					// from the "鼠标" node: -1 none (mouse does nothing), 0 click + drag, 1 no click
+	bool  FCamOn, FHasLast;				// FCamOn: a "镜头" node sets the eye position (first-person look)
+	float FCamX, FCamY, FCamZ;
+	float FYaw, FPitch, FDist;
+	int   FOx, FOy;
+	TPopupMenu *FMenu;
+	TMenuItem  *FmiLook;
+
 	static void Norm(float &x, float &y, float &z)
 	{
 		float l = sqrtf(x * x + y * y + z * z);
@@ -55,8 +67,17 @@ private:
 
 	void SetupCamera(int w, int h)
 	{
-		FEx = 0.0f; FEy = 4.5f; FEz = 11.0f;
-		FFx = 0.0f - FEx; FFy = 0.8f - FEy; FFz = 0.0f - FEz;		// looking at (0, 0.8, 0)
+		float cp = cosf(FPitch), sp = sinf(FPitch);
+		if (FCamOn)			// camera node: eye at its position, the mouse turns the view direction
+		{
+			FEx = FCamX; FEy = FCamY; FEz = FCamZ;
+			FFx = -sinf(FYaw) * cp; FFy = -sp; FFz = -cosf(FYaw) * cp;
+		}
+		else
+		{
+			FEx = FDist * sinf(FYaw) * cp; FEy = 0.8f + FDist * sp; FEz = FDist * cosf(FYaw) * cp;
+			FFx = 0.0f - FEx; FFy = 0.8f - FEy; FFz = 0.0f - FEz;		// looking at (0, 0.8, 0)
+		}
 		Norm(FFx, FFy, FFz);
 		FRx = -FFz; FRy = 0.0f; FRz = FFx;							// right = forward x up(0,1,0)
 		Norm(FRx, FRy, FRz);
@@ -217,6 +238,9 @@ private:
 		FLast = now;
 		if (dt > 0.1f) dt = 0.1f;
 		float kh = 0, kv = 0, ks = 0;
+		unsigned km = 0;
+		bool Down[256];
+		for (int k = 0; k < 256; k++) Down[k] = false;
 		TCustomForm *F = GetParentForm(this);
 		if (F && ::GetForegroundWindow() == F->Handle)
 		{
@@ -225,9 +249,17 @@ private:
 			if (IsDown('W') || IsDown(VK_UP))    kv += 1.0f;
 			if (IsDown('S') || IsDown(VK_DOWN))  kv -= 1.0f;
 			if (IsDown(VK_SPACE))                 ks = 1.0f;
+			if (IsDown('W')) km |= 1;    if (IsDown('A')) km |= 2;     if (IsDown('S')) km |= 4;       if (IsDown('D')) km |= 8;
+			for (int k = 1; k < 255; k++) Down[k] = IsDown(k);		// every key, for the "键盘" nodes
+			if (IsDown(VK_UP)) km |= 16; if (IsDown(VK_DOWN)) km |= 32; if (IsDown(VK_LEFT)) km |= 64; if (IsDown(VK_RIGHT)) km |= 128;
 		}
 
+		FGraph->SetRunKeys(km);
+		FGraph->SetRunKeyStates(Down);		// the "键盘" nodes read this (any key, not only WASD / arrows)
 		FGraph->RunStep(t, dt, kh, kv, ks, FObjs);
+		FMouseMode = FGraph->MouseMode();
+		FCamOn = FGraph->GetRunCamera(FCamX, FCamY, FCamZ);
+		if (FMouseMode < 0) FOrbit = false;
 
 		// ---- ground grid ----
 		SetupCamera(w, h);
@@ -290,10 +322,63 @@ public:
 		  FFpsFrameCount(0),
 		  FFps(0),
 		  FEx(0), FEy(0), FEz(0), FRx(0), FRy(0), FRz(0), FUx(0), FUy(0), FUz(0), FFx(0), FFy(0), FFz(0),
-		  FCx(0), FCy(0), FFocal(1)
+		  FCx(0), FCy(0), FFocal(1),
+		  FMouseLook(true), FOrbit(false), FYaw(0.0f), FPitch(0.3243f), FDist(11.605f), FOx(0), FOy(0), FMenu(NULL), FmiLook(NULL)
 	{
 		OnRender = RenderRun;
+		FMenu = new TPopupMenu(this);		// right click: mouse / camera control
+		FMouseMode = -1; FCamOn = false; FHasLast = false; FCamX = 0; FCamY = 4.5f; FCamZ = 11.0f;
+		TMenuItem *Reset = new TMenuItem(FMenu);
+		Reset->Caption = L"\u91CD\u7F6E\u955C\u5934";							// 重置镜头
+		Reset->OnClick = MenuReset;
+		FMenu->Items->Add(Reset);
+		PopupMenu = FMenu;
 		Restart();
+	}
+
+	void __fastcall MenuLook(TObject *Sender)
+	{
+		FMouseLook = !FMouseLook;
+		FmiLook->Checked = FMouseLook;
+		FOrbit = false;
+	}
+
+	void __fastcall MenuReset(TObject *Sender)
+	{
+		FYaw = 0.0f; FPitch = 0.3243f; FDist = 11.605f;
+	}
+
+	DYNAMIC void __fastcall MouseDown(TMouseButton Button, TShiftState Shift, int X, int Y)
+	{
+		TSDLPanel::MouseDown(Button, Shift, X, Y);
+		if (CanFocus() && !Focused()) SetFocus();
+		if (Button == mbLeft && FMouseMode == 0) { FOrbit = true; FOx = X; FOy = Y; }
+	}
+
+	DYNAMIC void __fastcall MouseMove(TShiftState Shift, int X, int Y)
+	{
+		TSDLPanel::MouseMove(Shift, X, Y);
+		bool look = (FMouseMode == 1) || (FMouseMode == 0 && FOrbit);
+		if (look && (FHasLast || FOrbit))
+		{
+			FYaw   -= (X - FOx) * 0.01f;
+			FPitch += (Y - FOy) * 0.01f;
+			FPitch  = std::min(1.5f, std::max(FCamOn ? -1.5f : 0.02f, FPitch));
+		}
+		FOx = X; FOy = Y; FHasLast = true;
+	}
+
+	DYNAMIC void __fastcall MouseUp(TMouseButton Button, TShiftState Shift, int X, int Y)
+	{
+		TSDLPanel::MouseUp(Button, Shift, X, Y);
+		if (Button == mbLeft) FOrbit = false;
+	}
+
+	DYNAMIC bool __fastcall DoMouseWheel(TShiftState Shift, int WheelDelta, const TPoint &MousePos)
+	{
+		if (FMouseMode < 0 || FCamOn) return TSDLPanel::DoMouseWheel(Shift, WheelDelta, MousePos);		// wheel zoom only orbits
+		FDist = std::min(40.0f, std::max(3.0f, FDist * powf(0.9f, WheelDelta / 120.0f)));
+		return true;
 	}
 
 	void Restart()
