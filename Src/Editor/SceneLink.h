@@ -21,5 +21,8 @@ namespace GameEditor
 	{
 		// 返回 true 表示这一轮新建了 3D 对象或 2D 节点
 		bool Sync(Viewport3D* v3d, SceneGraph2D* v2d);
+
+		// 清空配对历史（打开 / 新建文档后调用，防止旧 Known 集合误删新对象）
+		void Reset();
 	}
 }

@@ -9,7 +9,7 @@
 #include "Hotkeys.h"
 
 class QLabel;
-class QRubberBand;
+class QJsonObject;
 struct SceneObject;
 
 namespace GameEditor
@@ -51,6 +51,10 @@ namespace GameEditor
 		void    SetObjectTransform(int uid, const QVector3D& pos, const QVector3D& size, float rotZRad);
 		std::vector<int> SelectedUids() const;
 		void    SelectByUids(const std::vector<int>& uids);
+
+		// ---- 文档存取（.yu，由 Document 调用）----
+		void SaveState(QJsonObject& out) const;             // 对象 + 相机 -> JSON
+		void LoadState(const QJsonObject& in);              // JSON -> 对象 + 相机
 		void    SetSelected(int index);                       // 主选中（-1 = 清空）
 		QString SelectedName() const;
 		int     SelectedCount() const { return int(m_selection.size()); }
@@ -90,6 +94,7 @@ namespace GameEditor
 		void UpdateOverlay();
 		void PushTri(const QVector3D& a, const QVector3D& b, const QVector3D& c, const QColor& col);
 		void PushLine(const QVector3D& a, const QVector3D& b, const QColor& col);
+		void PushLineNoOffset(const QVector3D& a, const QVector3D& b, const QColor& col);
 		void PushBoxWire(const QVector3D corners[8], const QColor& col);
 		void PushBoxFaces(const QVector3D corners[8], const QColor& col);
 		void PushGrid();
@@ -147,7 +152,11 @@ namespace GameEditor
 		float     m_gizmoStartAngle = 0.f;
 		Qt::MouseButtons m_dragButton = Qt::NoButton;
 
-		QRubberBand* m_rubber = nullptr;
+		// 左键框选矩形：画进 D3D（QRubberBand 这类子控件会被 flip-model
+		// 交换链盖住，看不见）。从左向右拖 = 全包含才选中（window），
+		// 从右向左拖 = 碰到就选中（crossing），与 3ds Max 一致。
+		QPointF m_bandStart, m_bandEnd;
+		bool    m_bandActive = false;
 
 		// FPS 统计
 		int    m_frames = 0;

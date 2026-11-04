@@ -1,0 +1,37 @@
+# ============ 构建产物 ============
+out/
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# ============ 编译中间文件 ============
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.tlog
+*.lastbuildstate
+*.idb
+
+# ============ IDE 缓存 ============
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.sdf
+*.VC.db
+*.VC.VC.opendb
+*.opensdf
+
+# ============ 临时 / 测试 ============
+Temp/
+*.log
+*.tmp
+
+# ============ 注意 ============
+# ThirdParty/SDL3-3.4.2 是项目自带的预编译开发包，必须提交（include + lib 的 dll/lib）。
+# 其中的 *.pdb 调试符号（约 43MB）已被本规则排除，不影响链接与运行。

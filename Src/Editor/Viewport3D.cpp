@@ -2,9 +2,10 @@
 #include "D3D12Renderer.h"
 
 #include <QLabel>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QRubberBand>
 #include <QRandomGenerator>
 #include <QResizeEvent>
 #include <QDateTime>
@@ -65,8 +66,6 @@ namespace GameEditor
 		setMouseTracking(true);
 
 		m_r = new D3D12Renderer;
-
-		m_rubber = new QRubberBand(QRubberBand::Rectangle, this);
 
 		// FPS 打开时才持续渲染（平时按需渲染）；页面切到 2D 节点图时暂停
 		auto* timer = new QTimer(this);
@@ -259,6 +258,15 @@ namespace GameEditor
 		m_r->DrawLines(v, 2);
 	}
 
+	void Viewport3D::PushLineNoOffset(const QVector3D& a, const QVector3D& b, const QColor& col)
+	{
+		// 不做视线偏移的连线：框选矩形在近裁剪面上绘制时要求投影位置分毫不差
+		const float r = col.redF(), g = col.greenF(), bl = col.blueF(), al = col.alphaF();
+		GpuVertex v[2] = { {a.x(),a.y(),a.z(), r,g,bl,al},
+			{b.x(),b.y(),b.z(), r,g,bl,al} };
+		m_r->DrawLines(v, 2);
+	}
+
 	void Viewport3D::PushBoxWire(const QVector3D corners[8], const QColor& col)
 	{
 		static const int e[12][2] = {
@@ -425,6 +433,29 @@ namespace GameEditor
 		}
 
 		PushGizmo();
+
+		// 框选矩形：把 4 个屏幕角点反投影到近裁剪面上连线（不偏移）。
+		// 这些世界点的投影恰好回到原屏幕位置，透视/正交都精确；
+		// 深度在所有物体之前，不会被交换链或几何盖住。
+		if (m_drag == DragMode::BoxSelect && m_bandActive)
+		{
+			const QPointF sc[4] = {
+				{ m_bandStart.x(), m_bandStart.y() },
+				{ m_bandEnd.x(),   m_bandStart.y() },
+				{ m_bandEnd.x(),   m_bandEnd.y() },
+				{ m_bandStart.x(), m_bandEnd.y() },
+			};
+			QVector3D w[4];
+			for (int i = 0; i < 4; ++i)
+			{
+				const float nx = float(sc[i].x() * 2.f / std::max(1, width()) - 1.f);
+				const float ny = float(1.f - sc[i].y() * 2.f / std::max(1, height()));
+				const QVector4D h = m_invVp * QVector4D(nx, ny, 0.001f, 1.f);
+				w[i] = (h.w() > 1e-5f) ? (h.toVector3D() / h.w()) : QVector3D();
+			}
+			for (int i = 0; i < 4; ++i)
+				PushLineNoOffset(w[i], w[(i + 1) % 4], QColor(235, 235, 240));
+		}
 
 		// QMatrix4x4 为列主序存储；直接取 .data() 顺序传给着色器
 		m_r->End();
@@ -653,6 +684,82 @@ namespace GameEditor
 			return;
 		m_selection = sel;
 		EmitSelection();
+	}
+
+	// ================= 文档存取（.yu） =================
+	void Viewport3D::SaveState(QJsonObject& out) const
+	{
+		QJsonArray objs;
+		for (const Obj& o : m_objects)
+		{
+			QJsonObject j;
+			j["uid"] = o.uid;
+			j["kind"] = o.kind;
+			j["name"] = QString::fromStdString(o.name);
+			j["color"] = o.color.name();
+			QJsonArray pos = { double(o.pos.x()), double(o.pos.y()), double(o.pos.z()) };
+			QJsonArray rot = { double(o.rot.x()), double(o.rot.y()), double(o.rot.z()) };
+			QJsonArray siz = { double(o.size.x()), double(o.size.y()), double(o.size.z()) };
+			j["pos"] = pos;
+			j["rot"] = rot;
+			j["size"] = siz;
+			objs.append(j);
+		}
+		out["objects"] = objs;
+		out["nextUid"] = m_nextUid;
+
+		QJsonObject cam;
+		cam["tx"] = double(m_target.x());
+		cam["ty"] = double(m_target.y());
+		cam["tz"] = double(m_target.z());
+		cam["yaw"] = double(m_yaw);
+		cam["pitch"] = double(m_pitch);
+		cam["dist"] = double(m_dist);
+		cam["ortho"] = m_ortho;
+		cam["wire"] = m_wireFrame;
+		out["camera"] = cam;
+	}
+
+	void Viewport3D::LoadState(const QJsonObject& in)
+	{
+		m_objects.clear();
+		m_selection.clear();
+		int maxUid = 0;
+		const QJsonArray objs = in["objects"].toArray();
+		for (const QJsonValue& v : objs)
+		{
+			const QJsonObject j = v.toObject();
+			Obj o;
+			o.uid = j["uid"].toInt();
+			o.kind = j["kind"].toInt();
+			o.name = j["name"].toString().toStdString();
+			o.color = QColor(j["color"].toString());
+			const QJsonArray pos = j["pos"].toArray();
+			const QJsonArray rot = j["rot"].toArray();
+			const QJsonArray siz = j["size"].toArray();
+			if (pos.size() == 3)
+				o.pos = QVector3D(float(pos.at(0).toDouble()), float(pos.at(1).toDouble()), float(pos.at(2).toDouble()));
+			if (rot.size() == 3)
+				o.rot = QVector3D(float(rot.at(0).toDouble()), float(rot.at(1).toDouble()), float(rot.at(2).toDouble()));
+			if (siz.size() == 3)
+				o.size = QVector3D(float(siz.at(0).toDouble()), float(siz.at(1).toDouble()), float(siz.at(2).toDouble()));
+			maxUid = std::max(maxUid, o.uid);
+			m_objects.push_back(o);
+		}
+		m_nextUid = std::max(in["nextUid"].toInt(maxUid + 1), maxUid + 1);
+
+		const QJsonObject cam = in["camera"].toObject();
+		if (!cam.isEmpty())
+		{
+			m_target = QVector3D(float(cam["tx"].toDouble(0)), float(cam["ty"].toDouble(0.4)), float(cam["tz"].toDouble(0)));
+			m_yaw = float(cam["yaw"].toDouble(-0.55));
+			m_pitch = float(cam["pitch"].toDouble(0.45));
+			m_dist = float(cam["dist"].toDouble(8.0));
+			m_ortho = cam["ortho"].toBool(false);
+			m_wireFrame = cam["wire"].toBool(false);
+		}
+		UpdateMatrices();
+		RenderNow();
 	}
 
 	QVector3D Viewport3D::SelectionCenter() const
@@ -1007,7 +1114,8 @@ namespace GameEditor
 			else
 			{
 				m_drag = DragMode::BoxSelect;
-				m_rubber->setGeometry(QRect(int(e->position().x()), int(e->position().y()), 0, 0));
+				m_bandStart = m_bandEnd = e->position();
+				m_bandActive = false;
 			}
 		}
 		QWidget::mousePressEvent(e);
@@ -1048,9 +1156,9 @@ namespace GameEditor
 			case DragMode::BoxSelect:
 				if (m_dragMoved)
 				{
-					m_rubber->setGeometry(QRect(QPoint(int(m_pressPos.x()), int(m_pressPos.y())),
-						QPoint(int(p.x()), int(p.y()))).normalized());
-					m_rubber->show();
+					m_bandEnd = p;
+					m_bandActive = true;
+					RenderNow();            // 重画：把矩形画进 D3D 帧
 				}
 				break;
 			case DragMode::Gizmo:
@@ -1072,28 +1180,43 @@ namespace GameEditor
 			}
 			else if (m_drag == DragMode::BoxSelect)
 			{
-				m_rubber->hide();
+				m_bandActive = false;
 				if (m_dragMoved)
 				{
-					// 框选：任一 OBB 角点落在矩形内即选中
-					const QRect rect = QRect(QPoint(int(m_pressPos.x()), int(m_pressPos.y())),
-						QPoint(int(e->position().x()), int(e->position().y()))).normalized();
+					// 3ds Max 语义：从左向右拖 = 窗口选择（整个物体都在框内才选）；
+					// 从右向左拖 = 交叉选择（碰到框就选）。
+					const QRectF rect = QRectF(m_pressPos, e->position()).normalized();
+					const bool windowMode = e->position().x() >= m_pressPos.x();
 					std::vector<int> picked;
 					for (int i = 0; i < int(m_objects.size()); ++i)
 					{
 						QVector3D corners[8];
 						ObjCorners(m_objects[i], corners);
+						QRectF bb;
+						bool any = false;
 						for (const QVector3D& c : corners)
 						{
 							QPointF sp;
 							if (!ProjectPoint(c, sp))
 								continue;
-							if (rect.contains(QPoint(int(sp.x()), int(sp.y()))))
+							if (!any)
 							{
-								picked.push_back(i);
-								break;
+								bb = QRectF(sp, sp);
+								any = true;
+							}
+							else
+							{
+								bb.setLeft(std::min(bb.left(), sp.x()));
+								bb.setRight(std::max(bb.right(), sp.x()));
+								bb.setTop(std::min(bb.top(), sp.y()));
+								bb.setBottom(std::max(bb.bottom(), sp.y()));
 							}
 						}
+						if (!any)
+							continue;
+						const bool hit = windowMode ? rect.contains(bb) : rect.intersects(bb);
+						if (hit)
+							picked.push_back(i);
 					}
 					if (e->modifiers() & Qt::ShiftModifier)
 					{
@@ -1109,6 +1232,7 @@ namespace GameEditor
 				{
 					PickAt(e->position(), e->modifiers() & Qt::ShiftModifier);
 				}
+				RenderNow();            // 清掉框选矩形
 			}
 		}
 		m_drag = DragMode::None;

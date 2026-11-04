@@ -169,5 +169,12 @@ namespace GameEditor
 			}
 			return created;
 		}
+
+		void Reset()
+		{
+			g_known.clear();
+			g_lastName.clear();
+			g_prevSel.clear();
+		}
 	}
 }

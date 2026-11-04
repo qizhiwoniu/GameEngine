@@ -46,6 +46,11 @@ namespace GameEditor
 		void UpdatePropRow();
 		void SetFrame(int frame);
 		void OnOpenSettings();
+		void UpdateTitle();             // 依据 m_docPath 刷新窗口标题
+		void OnFileNew();
+		void OnFileOpen();
+		void OnFileSave();
+		void OnFileSaveAs();
 		QToolBar* MakeBar(const QString& title);      // 建一个独立工具栏
 		void ShowBarMenu(const QPoint& globalPos);    // 工具栏空白处右键菜单
 		void SaveLayout();
@@ -69,6 +74,9 @@ namespace GameEditor
 		SettingsDialog* m_settings = nullptr;
 		bool m_autoSave = true;
 		int  m_autoSaveMinutes = 10;
+
+		// 当前文档（.yu）；空 = 未命名
+		QString m_docPath;
 
 		// Create / 属性 / 图层 / 动画面板
 		QTableWidget*  m_propTable = nullptr;

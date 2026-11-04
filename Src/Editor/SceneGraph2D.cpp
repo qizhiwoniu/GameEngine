@@ -8,6 +8,8 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QPainter>
 #include <QPainterPath>
 #include <cmath>
@@ -1159,6 +1161,15 @@ namespace GameEditor
 				ShowMenu(e->globalPosition().toPoint(), ToView(e->position()));
 			return;
 		}
+		if (e->button() == Qt::MiddleButton)
+		{
+			// 关键：中键释放也要清掉拖动状态。之前走不到下面的清空逻辑，
+			// m_drag 一直是 dgPan —— 单击滚轮松开后，鼠标一动视图就跟着跑
+			//（看起来像"点击滚轮移动"）。
+			m_drag = dgNone;
+			m_moveStart.clear();
+			return;
+		}
 		if (e->button() != Qt::LeftButton)
 			return;
 
@@ -1479,5 +1490,127 @@ namespace GameEditor
 		m_nodes.erase(m_nodes.begin() + i);
 		CleanGroups();
 		update();
+	}
+
+	// ================= 文档存取（.yu） =================
+	void SceneGraph2D::SaveState(QJsonObject& out) const
+	{
+		QJsonArray nodes;
+		for (const Node& n : m_nodes)
+		{
+			QJsonObject o;
+			o["id"] = n.id;
+			o["kind"] = n.kind;
+			o["name"] = n.name;
+			o["x"] = n.pos.x();
+			o["y"] = n.pos.y();
+			o["group"] = n.group;
+			o["obj"] = n.obj;
+			o["collapsed"] = n.collapsed;
+			o["hasVal"] = n.hasVal;
+			QJsonArray v;
+			for (int k = 0; k < 5; ++k)
+				v.append(double(n.val[k]));
+			o["val"] = v;
+			nodes.append(o);
+		}
+		QJsonArray links;
+		for (const Link& l : m_links)
+		{
+			QJsonObject o;
+			o["from"] = l.from;
+			o["fromPin"] = l.fromPin;
+			o["to"] = l.to;
+			o["toPin"] = l.toPin;
+			links.append(o);
+		}
+		QJsonArray groups;
+		for (const Group& g : m_groups)
+		{
+			QJsonObject o;
+			o["id"] = g.id;
+			o["name"] = g.name;
+			o["collapsed"] = g.collapsed;
+			groups.append(o);
+		}
+		out["nodes"] = nodes;
+		out["links"] = links;
+		out["groups"] = groups;
+		out["nextId"] = m_nextId;
+		out["nextGroup"] = m_nextGroup;
+		out["groupCounter"] = m_groupCounter;
+	}
+
+	void SceneGraph2D::LoadState(const QJsonObject& in)
+	{
+		m_nodes.clear();
+		m_links.clear();
+		m_groups.clear();
+		m_clipNodes.clear();
+		m_clipLinks.clear();
+		m_clipGroups.clear();
+		m_moveStart.clear();
+		for (int k = 0; k < NK_COUNT; ++k)
+			m_counter[k] = 0;
+
+		const QJsonArray nodes = in["nodes"].toArray();
+		for (const QJsonValue& v : nodes)
+		{
+			const QJsonObject o = v.toObject();
+			Node n;
+			n.id = o["id"].toInt();
+			n.kind = o["kind"].toInt();
+			n.name = o["name"].toString();
+			n.pos = QPointF(o["x"].toDouble(), o["y"].toDouble());
+			n.group = o["group"].toInt();
+			n.obj = o["obj"].toInt();
+			n.collapsed = o["collapsed"].toBool();
+			n.hasVal = o["hasVal"].toBool();
+			const QJsonArray vals = o["val"].toArray();
+			for (int k = 0; k < 5 && k < vals.size(); ++k)
+				n.val[k] = float(vals.at(k).toDouble());
+			m_nodes.push_back(n);
+			if (n.kind >= 0 && n.kind < NK_COUNT)
+				++m_counter[n.kind];
+		}
+		const QJsonArray links = in["links"].toArray();
+		for (const QJsonValue& v : links)
+		{
+			const QJsonObject o = v.toObject();
+			Link l;
+			l.from = o["from"].toInt();
+			l.fromPin = o["fromPin"].toInt();
+			l.to = o["to"].toInt();
+			l.toPin = o["toPin"].toInt();
+			m_links.push_back(l);
+		}
+		const QJsonArray groups = in["groups"].toArray();
+		for (const QJsonValue& v : groups)
+		{
+			const QJsonObject o = v.toObject();
+			Group g;
+			g.id = o["id"].toInt();
+			g.name = o["name"].toString();
+			g.collapsed = o["collapsed"].toBool();
+			m_groups.push_back(g);
+		}
+
+		// id 计数：优先用保存值，缺失时按现有最大 id 推
+		int maxId = 0, maxGrp = 0;
+		for (const Node& n : m_nodes)
+			maxId = std::max(maxId, n.id);
+		for (const Group& g : m_groups)
+			maxGrp = std::max(maxGrp, g.id);
+		m_nextId = std::max(in["nextId"].toInt(maxId + 1), maxId + 1);
+		m_nextGroup = std::max(in["nextGroup"].toInt(maxGrp + 1), maxGrp + 1);
+		m_groupCounter = in["groupCounter"].toInt(m_groups.size());
+
+		m_drag = dgNone;
+		update();
+	}
+
+	void SceneGraph2D::ResetDocument()
+	{
+		LoadState(QJsonObject{});
 	}
 }

@@ -9,6 +9,7 @@
 #include <utility>
 
 class QMenu;
+class QJsonObject;
 
 namespace GameEditor
 {
@@ -58,6 +59,14 @@ namespace GameEditor
 		void SetNodeVals(int id, const float v[5]);
 		void SelectNodesByObj(const std::vector<int>& uids);
 		void RemoveNodeById(int id);
+
+		// ---- 文档存取（.yu，由 Document 调用）----
+		void SaveState(QJsonObject& out) const;             // 节点 / 连线 / 组 -> JSON
+		void LoadState(const QJsonObject& in);              // JSON -> 节点 / 连线 / 组
+		void ResetDocument();                               // 清空全部（新建文档）
+
+		// 删除选中节点（Delete 键 / 编辑菜单都会走到这里）
+		void DeleteSelected();
 
 	protected:
 		void paintEvent(QPaintEvent*) override;
@@ -110,7 +119,6 @@ namespace GameEditor
 
 		// ---- 编辑 ----
 		void AddNode(int kind, const QPointF& vp);
-		void DeleteSelected();
 		void CopySelected();
 		void PasteAt(const QPointF& vp);
 		void RenameNode(int id);

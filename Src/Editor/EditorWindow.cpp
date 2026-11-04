@@ -1,5 +1,6 @@
 #include "EditorWindow.h"
 #include "AppIcons.h"
+#include "Document.h"
 #include "Viewport3D.h"
 #include "SceneGraph2D.h"
 #include "SceneLink.h"
@@ -11,13 +12,17 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QDockWidget>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
+#include <QJsonObject>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStyleFactory>
@@ -187,11 +192,11 @@ namespace GameEditor
 		// 菜单条目严格对齐 RAD 版 Unit1.dfm 的 MainMenu1 / MainMenu2
 		// ---- 文件(F) ----
 		QMenu* mFile = mb->addMenu(tr("文件(F)"));
-		mFile->addAction(tr("新建(&N)"), QKeySequence::New);
-		mFile->addAction(tr("打开(&O)"), QKeySequence::Open);
+		mFile->addAction(tr("新建(&N)"), QKeySequence::New, this, &EditorWindow::OnFileNew);
+		mFile->addAction(tr("打开(&O)"), QKeySequence::Open, this, &EditorWindow::OnFileOpen);
 		mFile->addSeparator();
-		mFile->addAction(tr("保存(&S)"), QKeySequence::Save);
-		mFile->addAction(tr("另存为..."));
+		mFile->addAction(tr("保存(&S)"), QKeySequence::Save, this, &EditorWindow::OnFileSave);
+		mFile->addAction(tr("另存为..."), this, &EditorWindow::OnFileSaveAs);
 		mFile->addSeparator();
 		mFile->addAction(tr("导入"));
 		mFile->addAction(tr("导出"));
@@ -209,7 +214,17 @@ namespace GameEditor
 		mEdit->addAction(tr("复制"), QKeySequence::Copy);
 		mEdit->addAction(tr("粘贴"), QKeySequence::Paste);
 		mEdit->addSeparator();
-		mEdit->addAction(tr("删除"), QKeySequence::Delete, this, [this] { m_viewport->DeleteSelected(); RefreshLayers(); });
+		// 按当前页面分发：2D 节点图页删节点，3D 页删对象。
+		// 之前固定删 3D 选中——在 2D 页按 Delete 时删的是 3D 的选中对象，
+		// 纯逻辑节点（时间/运行输出）永远删不掉，还可能删错对象。
+		mEdit->addAction(tr("删除"), QKeySequence::Delete, this, [this]
+			{
+				if (m_centralStack->currentWidget() == static_cast<QWidget*>(m_graph2d))
+					m_graph2d->DeleteSelected();
+				else
+					m_viewport->DeleteSelected();
+				RefreshLayers();
+			});
 
 		// ---- 创建(C) ----
 		QMenu* mCreate = mb->addMenu(tr("创建(&C)"));
@@ -305,9 +320,9 @@ namespace GameEditor
 
 		// ---- 工具栏1：文件 ----
 		QToolBar* b1 = MakeBar(tr("工具栏1"));
-		b1->addAction(Make(Icon::NewDoc, ic), tr("新建"));
-		b1->addAction(Make(Icon::Open, ic), tr("打开"));
-		b1->addAction(Make(Icon::Save, ic), tr("保存"));
+		b1->addAction(Make(Icon::NewDoc, ic), tr("新建"), this, &EditorWindow::OnFileNew);
+		b1->addAction(Make(Icon::Open, ic), tr("打开"), this, &EditorWindow::OnFileOpen);
+		b1->addAction(Make(Icon::Save, ic), tr("保存"), this, &EditorWindow::OnFileSave);
 
 		// ---- 工具栏2：播放控制 ----
 		QToolBar* b2 = MakeBar(tr("工具栏2"));
@@ -689,5 +704,83 @@ namespace GameEditor
 		m_settings->show();
 		m_settings->raise();
 		m_settings->activateWindow();
+	}
+
+	// ================= 文件（.yu 文档） =================
+	void EditorWindow::UpdateTitle()
+	{
+		const QString name = m_docPath.isEmpty()
+			? tr("未命名")
+			: QFileInfo(m_docPath).fileName();
+		setWindowTitle(tr("3DGameEngine - %1").arg(name));
+	}
+
+	void EditorWindow::OnFileNew()
+	{
+		m_docPath.clear();
+		UpdateTitle();
+		SceneLink::Reset();
+		m_viewport->LoadState(QJsonObject{});   // 清空对象，相机回默认
+		m_graph2d->ResetDocument();             // 清空节点 / 连线 / 组
+		RefreshLayers();
+	}
+
+	void EditorWindow::OnFileOpen()
+	{
+		const QString start = m_docPath.isEmpty()
+			? QString()
+			: QFileInfo(m_docPath).absolutePath();
+		const QString path = QFileDialog::getOpenFileName(
+			this, tr("打开场景"), start,
+			tr("场景文件 (*.yu);;所有文件 (*)"));
+		if (path.isEmpty())
+			return;
+		QString err;
+		if (!Document::Load(path, m_viewport, m_graph2d, &err))
+		{
+			QMessageBox::warning(this, tr("打开"), err);
+			return;
+		}
+		m_docPath = path;
+		UpdateTitle();
+		RefreshLayers();
+	}
+
+	void EditorWindow::OnFileSave()
+	{
+		if (m_docPath.isEmpty())
+		{
+			OnFileSaveAs();
+			return;
+		}
+		QString err;
+		if (!Document::Save(m_docPath, m_viewport, m_graph2d, &err))
+		{
+			QMessageBox::warning(this, tr("保存"), err);
+			return;
+		}
+	}
+
+	void EditorWindow::OnFileSaveAs()
+	{
+		const QString start = m_docPath.isEmpty()
+			? QString()
+			: QFileInfo(m_docPath).absolutePath();
+		const QString path = QFileDialog::getSaveFileName(
+			this, tr("保存场景"), start,
+			tr("场景文件 (*.yu);;所有文件 (*)"));
+		if (path.isEmpty())
+			return;
+		QString fixed = path;
+		if (!fixed.endsWith(QStringLiteral(".yu"), Qt::CaseInsensitive))
+			fixed += QStringLiteral(".yu");
+		QString err;
+		if (!Document::Save(fixed, m_viewport, m_graph2d, &err))
+		{
+			QMessageBox::warning(this, tr("保存"), err);
+			return;
+		}
+		m_docPath = fixed;
+		UpdateTitle();
 	}
 }
