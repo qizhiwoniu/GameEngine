@@ -569,6 +569,10 @@ namespace GameEditor
 		v1->setContentsMargins(0, 0, 0, 0);
 		v1->setSpacing(6);
 
+		m_kb = new KeyboardView(m_page[0]);
+		m_kb->setMinimumHeight(248);
+		connect(m_kb, &KeyboardView::SelectionChanged, this, [this] { UpdateInfo(); });
+
 		// 键盘布局切换：82 键 / 104 键（两种参考图同尺寸，直接换底图与键位表）
 		auto* kbRow = new QHBoxLayout;
 		kbRow->addWidget(new QLabel(tr("键盘布局"), m_page[0]));
@@ -591,9 +595,6 @@ namespace GameEditor
 		kbRow->addStretch();
 		v1->addLayout(kbRow);
 
-		m_kb = new KeyboardView(m_page[0]);
-		m_kb->setMinimumHeight(248);
-		connect(m_kb, &KeyboardView::SelectionChanged, this, [this] { UpdateInfo(); });
 		v1->addWidget(m_kb);
 		m_info = new QLabel(m_page[0]);
 		m_info->setStyleSheet("font-weight:bold;");
