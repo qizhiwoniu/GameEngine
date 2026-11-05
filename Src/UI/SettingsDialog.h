@@ -1,5 +1,6 @@
 #pragma once
 #include <QDialog>
+#include <QImage>
 #include <QVector>
 #include <QRect>
 #include "Hotkeys.h"
@@ -35,12 +36,16 @@ namespace GameEditor
 		int m_hot = -1;
 	};
 
-	// Maya 风格键盘布局图：高亮当前修饰键组合下已绑定的键，显示命令名
+	// Maya 风格键盘布局图：以 KEYBOARD-82Dark.png 为底图，按键尺寸按参考图
+	// 实测坐标等比缩放；绑定了快捷键的键显示为高亮按钮（蓝=已绑定、
+	// 琥珀=激活修饰键、亮蓝描边=选中）。
 	class KeyboardView : public QWidget
 	{
 		Q_OBJECT
 	public:
 		explicit KeyboardView(QWidget* parent = nullptr);
+		void SetVariant(int v) { m_var = v; m_layW = 0; update(); }   // 0=82键 1=104键
+		int  Variant() const { return m_var; }
 		int  Mods() const { return m_mods; }
 		void SetMods(int m) { m_mods = m; update(); }
 		int  SelVk() const { return m_selVk; }
@@ -58,6 +63,11 @@ namespace GameEditor
 		void BuildLayout();
 		int  HitTest(const QPointF& p);
 		QVector<KeyBox> m_keys;
+		QImage m_bg;             // KEYBOARD-82Dark.png 参考底图
+		QImage m_bg104;          // KEYBOARD-104Dark.png 参考底图
+		int   m_var = 0;         // 0=82键布局 1=104键布局
+		float m_scale = 1.f;     // 底图缩放比
+		float m_ox = 0.f, m_oy = 0.f;   // 底图在控件内的偏移
 		int m_mods = 0;          // 当前修饰键状态（Shift/Ctrl/Alt 键可点击切换）
 		int m_selVk = 0;         // 选中的键（0 = 无）
 		int m_hot = -1;

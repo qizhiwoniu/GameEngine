@@ -10,6 +10,7 @@
 #include <QSpinBox>
 #include <QPushButton>
 #include <QTreeWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -115,48 +116,228 @@ namespace GameEditor
 	}
 
 	// ==================== KeyboardView ====================
+	// 视觉参考 Assets/Image/KEYBOARD-82Dark.png（754x211，已编译进 qrc）。
+	// 下面的键位矩形是从参考图逐键实测出来的（键距 32px、键面 26x24、
+	// 圆角 3px、上亮下暗渐变），运行时把参考图整体缩放铺底，
+	// 再按同一缩放比例在键位上叠加"高亮按钮"：
+	//   蓝色按钮 = 当前修饰键组合下绑定了快捷键（按钮中央显示命令名）
+	//   琥珀色   = 点击 Shift/Ctrl/Alt 切换出的激活修饰键
+	//   亮蓝描边 = 当前选中的键
 	namespace
 	{
-		// 键盘布局：宽单位 1 = 标准键；vk -1 = 空位；vk 0 = 不可指派键
-		struct KeyDef { const wchar_t* cap; int vk; float w; };
-		#define ROW_END { nullptr, -2, 0 }
-		const KeyDef kLayout[] = {
-			// 功能键行
-			{ L"Esc", VK_ESCAPE, 1 }, { L"", -1, 1 },
-			{ L"F1", VK_F1, 1 }, { L"F2", VK_F2, 1 }, { L"F3", VK_F3, 1 }, { L"F4", VK_F4, 1 }, { L"", -1, 0.5f },
-			{ L"F5", VK_F5, 1 }, { L"F6", VK_F6, 1 }, { L"F7", VK_F7, 1 }, { L"F8", VK_F8, 1 }, { L"", -1, 0.5f },
-			{ L"F9", VK_F9, 1 }, { L"F10", VK_F10, 1 }, { L"F11", VK_F11, 1 }, { L"F12", VK_F12, 1 },
-			ROW_END,
+		struct KeyDef { int x1, y1, x2, y2; int vk; const wchar_t* cap; };   // 参考图像素坐标（左上/右下）
+		const int kImgW = 754, kImgH = 211;
+		const KeyDef kKeys82[] = {
+			// F 键行
+			{ 14,20,39,43,   VK_ESCAPE,  L"Esc" },
+			{ 78,20,103,43,  VK_F1,      L"F1" },
+			{ 110,20,135,43, VK_F2,      L"F2" },
+			{ 142,20,167,43, VK_F3,      L"F3" },
+			{ 174,20,199,43, VK_F4,      L"F4" },
+			{ 222,20,247,43, VK_F5,      L"F5" },
+			{ 254,20,279,43, VK_F6,      L"F6" },
+			{ 286,20,311,43, VK_F7,      L"F7" },
+			{ 318,20,343,43, VK_F8,      L"F8" },
+			{ 366,20,391,43, VK_F9,      L"F9" },
+			{ 398,20,423,43, VK_F10,     L"F10" },
+			{ 430,20,455,43, VK_F11,     L"F11" },
+			{ 462,20,487,43, VK_F12,     L"F12" },
+			{ 495,20,520,43, 0,          L"Del" },
 			// 数字行
-			{ L"`", VK_OEM_3, 1 }, { L"1", '1', 1 }, { L"2", '2', 1 }, { L"3", '3', 1 }, { L"4", '4', 1 },
-			{ L"5", '5', 1 }, { L"6", '6', 1 }, { L"7", '7', 1 }, { L"8", '8', 1 }, { L"9", '9', 1 },
-			{ L"0", '0', 1 }, { L"-", VK_OEM_MINUS, 1 }, { L"=", VK_OEM_PLUS, 1 }, { L"Backspace", VK_BACK, 2 },
-			ROW_END,
+			{ 14,53,39,76,   VK_OEM_3,    L"`" },
+			{ 46,53,71,76,   '1',         L"1" },
+			{ 78,53,103,76,  '2',         L"2" },
+			{ 110,53,135,76, '3',         L"3" },
+			{ 142,53,167,76, '4',         L"4" },
+			{ 174,53,199,76, '5',         L"5" },
+			{ 206,53,231,76, '6',         L"6" },
+			{ 238,53,263,76, '7',         L"7" },
+			{ 270,53,295,76, '8',         L"8" },
+			{ 302,53,327,76, '9',         L"9" },
+			{ 334,53,359,76, '0',         L"0" },
+			{ 366,53,391,76, VK_OEM_MINUS,L"-" },
+			{ 398,53,423,76, VK_OEM_PLUS, L"=" },
+			{ 430,53,487,76, VK_BACK,     L"Backspace" },
+			{ 525,53,550,76, 0,           L"Home" },
 			// Q 行
-			{ L"Tab", VK_TAB, 1.5f },
-			{ L"Q", 'Q', 1 }, { L"W", 'W', 1 }, { L"E", 'E', 1 }, { L"R", 'R', 1 }, { L"T", 'T', 1 },
-			{ L"Y", 'Y', 1 }, { L"U", 'U', 1 }, { L"I", 'I', 1 }, { L"O", 'O', 1 }, { L"P", 'P', 1 },
-			{ L"[", VK_OEM_4, 1 }, { L"]", VK_OEM_6, 1 }, { L"\\", VK_OEM_5, 1.5f },
-			ROW_END,
+			{ 14,83,55,106,  VK_TAB,      L"Tab" },
+			{ 62,83,87,106,  'Q',         L"Q" },
+			{ 94,83,119,106, 'W',         L"W" },
+			{ 126,83,151,106,'E',         L"E" },
+			{ 158,83,183,106,'R',         L"R" },
+			{ 190,83,215,106,'T',         L"T" },
+			{ 222,83,247,106,'Y',         L"Y" },
+			{ 254,83,279,106,'U',         L"U" },
+			{ 286,83,311,106,'I',         L"I" },
+			{ 318,83,343,106,'O',         L"O" },
+			{ 350,83,375,106,'P',         L"P" },
+			{ 382,83,407,106,VK_OEM_4,    L"[" },
+			{ 414,83,439,106,VK_OEM_6,    L"]" },
+			{ 446,83,487,106,VK_OEM_5,    L"\\" },
+			{ 525,83,550,106,0,           L"End" },
 			// A 行
-			{ L"Caps", VK_CAPITAL, 1.75f },
-			{ L"A", 'A', 1 }, { L"S", 'S', 1 }, { L"D", 'D', 1 }, { L"F", 'F', 1 }, { L"G", 'G', 1 },
-			{ L"H", 'H', 1 }, { L"J", 'J', 1 }, { L"K", 'K', 1 }, { L"L", 'L', 1 },
-			{ L";", VK_OEM_1, 1 }, { L"'", VK_OEM_7, 1 }, { L"Enter", VK_RETURN, 2.25f },
-			ROW_END,
+			{ 14,113,71,136, VK_CAPITAL,  L"Caps" },
+			{ 78,113,103,136,'A',         L"A" },
+			{ 110,113,135,136,'S',        L"S" },
+			{ 142,113,167,136,'D',        L"D" },
+			{ 174,113,199,136,'F',        L"F" },
+			{ 206,113,231,136,'G',        L"G" },
+			{ 238,113,263,136,'H',        L"H" },
+			{ 270,113,295,136,'J',        L"J" },
+			{ 302,113,327,136,'K',        L"K" },
+			{ 334,113,359,136,'L',        L"L" },
+			{ 366,113,391,136,VK_OEM_1,   L";" },
+			{ 398,113,423,136,VK_OEM_7,   L"'" },
+			{ 430,113,487,136,VK_RETURN,  L"Enter" },
+			{ 525,113,550,136,0,          L"PgUp" },
 			// Z 行
-			{ L"Shift", VK_SHIFT, 2.25f },
-			{ L"Z", 'Z', 1 }, { L"X", 'X', 1 }, { L"C", 'C', 1 }, { L"V", 'V', 1 }, { L"B", 'B', 1 },
-			{ L"N", 'N', 1 }, { L"M", 'M', 1 },
-			{ L",", VK_OEM_COMMA, 1 }, { L".", VK_OEM_PERIOD, 1 }, { L"/", VK_OEM_2, 1 }, { L"Shift", VK_SHIFT, 2.75f },
-			ROW_END,
+			{ 14,143,87,166, VK_SHIFT,    L"Shift" },
+			{ 94,143,119,166,'Z',         L"Z" },
+			{ 126,143,151,166,'X',        L"X" },
+			{ 158,143,183,166,'C',        L"C" },
+			{ 190,143,215,166,'V',        L"V" },
+			{ 222,143,247,166,'B',        L"B" },
+			{ 254,143,279,166,'N',        L"N" },
+			{ 286,143,311,166,'M',        L"M" },
+			{ 318,143,343,166,VK_OEM_COMMA,  L"," },
+			{ 350,143,375,166,VK_OEM_PERIOD, L"." },
+			{ 382,143,407,166,VK_OEM_2,   L"/" },
+			{ 414,143,487,166,VK_SHIFT,   L"Shift" },
+			{ 493,143,518,166,0,          L"\x2191" },
+			{ 525,143,550,166,0,          L"PgDn" },
 			// 底行
-			{ L"Ctrl", VK_CONTROL, 1.5f }, { L"Win", 0, 1.5f }, { L"Alt", VK_MENU, 1.5f },
-			{ L"Space", VK_SPACE, 5.5f },
-			{ L"Alt", VK_MENU, 1.5f }, { L"Win", 0, 1.5f }, { L"Ctrl", VK_CONTROL, 1.5f },
-			ROW_END,
+			{ 14,173,55,196, VK_CONTROL,  L"Ctrl" },
+			{ 62,173,87,196, 0,           L"Win" },
+			{ 94,173,119,196,VK_MENU,     L"Alt" },
+			{ 126,173,343,196,VK_SPACE,   L"Space" },
+			{ 350,173,375,196,VK_MENU,    L"Alt" },
+			{ 382,173,407,196,0,          L"Win" },
+			{ 414,173,439,196,VK_CONTROL, L"Ctrl" },
+			{ 461,173,486,196,0,          L"\x2190" },
+			{ 493,173,518,196,0,          L"\x2193" },
+			{ 525,173,550,196,0,          L"\x2192" },
 		};
-		const int kKeyCount = int(std::size(kLayout));
+		const int kKey82Count = int(std::size(kKeys82));
+
+		// 104 键布局（KEYBOARD-104Dark.png 实测，同一张 754x211 画布）：
+		// 在 82 键基础上补 PrtSc/ScrLk/Pause、Ins/Home/PgUp/PgDn、方向键、小键盘。
+		const KeyDef kKeys104[] = {
+			// F 键行
+			{ 14,20,39,43,   VK_ESCAPE,  L"Esc" },
+			{ 78,20,103,43,  VK_F1,      L"F1" },
+			{ 110,20,135,43, VK_F2,      L"F2" },
+			{ 142,20,167,43, VK_F3,      L"F3" },
+			{ 174,20,199,43, VK_F4,      L"F4" },
+			{ 222,20,247,43, VK_F5,      L"F5" },
+			{ 254,20,279,43, VK_F6,      L"F6" },
+			{ 286,20,311,43, VK_F7,      L"F7" },
+			{ 318,20,343,43, VK_F8,      L"F8" },
+			{ 366,20,391,43, VK_F9,      L"F9" },
+			{ 398,20,423,43, VK_F10,     L"F10" },
+			{ 430,20,455,43, VK_F11,     L"F11" },
+			{ 462,20,487,43, VK_F12,     L"F12" },
+			{ 508,20,533,43, 0,          L"PrtSc" },
+			{ 540,20,565,43, 0,          L"ScrLk" },
+			{ 572,20,597,43, 0,          L"Pause" },
+			// 数字行
+			{ 14,53,39,76,   VK_OEM_3,    L"`" },
+			{ 46,53,71,76,   '1',         L"1" },
+			{ 78,53,103,76,  '2',         L"2" },
+			{ 110,53,135,76, '3',         L"3" },
+			{ 142,53,167,76, '4',         L"4" },
+			{ 174,53,199,76, '5',         L"5" },
+			{ 206,53,231,76, '6',         L"6" },
+			{ 238,53,263,76, '7',         L"7" },
+			{ 270,53,295,76, '8',         L"8" },
+			{ 302,53,327,76, '9',         L"9" },
+			{ 334,53,359,76, '0',         L"0" },
+			{ 366,53,391,76, VK_OEM_MINUS,L"-" },
+			{ 398,53,423,76, VK_OEM_PLUS, L"=" },
+			{ 430,53,487,76, VK_BACK,     L"Backspace" },
+			{ 508,53,533,76, 0,           L"Ins" },
+			{ 540,53,565,76, 0,           L"Home" },
+			{ 572,53,597,76, 0,           L"PgUp" },
+			{ 618,53,643,76, 0,           L"Num" },
+			{ 650,53,675,76, 0,           L"/" },
+			{ 682,53,707,76, 0,           L"*" },
+			{ 714,53,739,76, 0,           L"-" },
+			// Q 行
+			{ 14,83,55,106,  VK_TAB,      L"Tab" },
+			{ 62,83,87,106,  'Q',         L"Q" },
+			{ 94,83,119,106, 'W',         L"W" },
+			{ 126,83,151,106,'E',         L"E" },
+			{ 158,83,183,106,'R',         L"R" },
+			{ 190,83,215,106,'T',         L"T" },
+			{ 222,83,247,106,'Y',         L"Y" },
+			{ 254,83,279,106,'U',         L"U" },
+			{ 286,83,311,106,'I',         L"I" },
+			{ 318,83,343,106,'O',         L"O" },
+			{ 350,83,375,106,'P',         L"P" },
+			{ 382,83,407,106,VK_OEM_4,    L"[" },
+			{ 414,83,439,106,VK_OEM_6,    L"]" },
+			{ 446,83,487,106,VK_OEM_5,    L"\\" },
+			{ 508,83,533,106,0,           L"Del" },
+			{ 540,83,565,106,0,           L"End" },
+			{ 572,83,597,106,0,           L"PgDn" },
+			{ 618,83,643,106,0,           L"7" },
+			{ 650,83,675,106,0,           L"8" },
+			{ 682,83,707,106,0,           L"9" },
+			{ 714,83,739,136,0,           L"+" },
+			// A 行
+			{ 14,113,71,136, VK_CAPITAL,  L"Caps" },
+			{ 78,113,103,136,'A',         L"A" },
+			{ 110,113,135,136,'S',        L"S" },
+			{ 142,113,167,136,'D',        L"D" },
+			{ 174,113,199,136,'F',        L"F" },
+			{ 206,113,231,136,'G',        L"G" },
+			{ 238,113,263,136,'H',        L"H" },
+			{ 270,113,295,136,'J',        L"J" },
+			{ 302,113,327,136,'K',        L"K" },
+			{ 334,113,359,136,'L',        L"L" },
+			{ 366,113,391,136,VK_OEM_1,   L";" },
+			{ 398,113,423,136,VK_OEM_7,   L"'" },
+			{ 430,113,487,136,VK_RETURN,  L"Enter" },
+			{ 618,113,643,136,0,          L"4" },
+			{ 650,113,675,136,0,          L"5" },
+			{ 682,113,707,136,0,          L"6" },
+			// Z 行
+			{ 14,143,87,166, VK_SHIFT,    L"Shift" },
+			{ 94,143,119,166,'Z',         L"Z" },
+			{ 126,143,151,166,'X',        L"X" },
+			{ 158,143,183,166,'C',        L"C" },
+			{ 190,143,215,166,'V',        L"V" },
+			{ 222,143,247,166,'B',        L"B" },
+			{ 254,143,279,166,'N',        L"N" },
+			{ 286,143,311,166,'M',        L"M" },
+			{ 318,143,343,166,VK_OEM_COMMA,  L"," },
+			{ 350,143,375,166,VK_OEM_PERIOD, L"." },
+			{ 382,143,407,166,VK_OEM_2,   L"/" },
+			{ 414,143,487,166,VK_SHIFT,   L"Shift" },
+			{ 540,143,565,166,0,          L"\x2191" },
+			{ 618,143,643,166,0,          L"1" },
+			{ 650,143,675,166,0,          L"2" },
+			{ 682,143,707,166,0,          L"3" },
+			{ 714,143,739,196,0,          L"Enter" },
+			// 底行
+			{ 14,173,55,196, VK_CONTROL,  L"Ctrl" },
+			{ 62,173,87,196, 0,           L"Win" },
+			{ 94,173,119,196,VK_MENU,     L"Alt" },
+			{ 126,173,343,196,VK_SPACE,   L"Space" },
+			{ 350,173,375,196,VK_MENU,    L"Alt" },
+			{ 382,173,407,196,0,          L"Win" },
+			{ 414,173,439,196,0,          L"Menu" },
+			{ 446,173,487,196,VK_CONTROL, L"Ctrl" },
+			{ 508,173,533,196,0,          L"\x2190" },
+			{ 540,173,565,196,0,          L"\x2193" },
+			{ 572,173,597,196,0,          L"\x2192" },
+			{ 618,173,675,196,0,          L"0" },
+			{ 682,173,707,196,0,          L"." },
+		};
+		const int kKey104Count = int(std::size(kKeys104));
+
+		// 选中布局表
+		inline const KeyDef* KeyTable(int variant) { return variant == 1 ? kKeys104 : kKeys82; }
+		inline int KeyCount(int variant) { return variant == 1 ? kKey104Count : kKey82Count; }
 
 		int ModBitOf(int vk)
 		{
@@ -171,40 +352,33 @@ namespace GameEditor
 		: QWidget(parent)
 	{
 		setMouseTracking(true);
-		setMinimumHeight(300);
+		setMinimumHeight(240);
+		// 排障/验收辅助：GE_KB_104=1 时默认显示 104 键布局
+		m_var = qEnvironmentVariableIsSet("GE_KB_104") ? 1 : 0;
+		m_bg.load(QStringLiteral(":/images/keyboard82dark.png"));
+		m_bg104.load(QStringLiteral(":/images/keyboard104dark.png"));
 	}
 
 	void KeyboardView::BuildLayout()
 	{
 		m_keys.clear();
-		const float U = std::min(width() / 15.f, height() / 6.5f);
-		const float ox = (width() - U * 15.f) / 2.f, oy = 2.f;
-		float x = 0, y = 0;
-		int row = 0;
-		for (int i = 0; i < kKeyCount; ++i)
+		// 与参考图等比缩放并水平垂直居中
+		const float s = std::min(width() / float(kImgW), height() / float(kImgH));
+		const float ox = (width() - kImgW * s) / 2.f, oy = (height() - kImgH * s) / 2.f;
+		m_scale = s; m_ox = ox; m_oy = oy;
+		const KeyDef* tab = KeyTable(m_var);
+		const int n = KeyCount(m_var);
+		for (int i = 0; i < n; ++i)
 		{
-			const KeyDef& d = kLayout[i];
-			if (!d.cap)          // 行结束
-			{
-				x = 0;
-				y += 1.f;
-				if (row == 0) y += 0.5f;   // 功能键行下多留半格
-				++row;
-				continue;
-			}
-			if (d.vk != -1)
-			{
-				KeyBox k;
-				k.r = QRect(int(ox + x * U + 1.5f), int(oy + y * U + 1.5f),
-					int(d.w * U - 3.f), int(U - 3.f));
-				k.vk = d.vk;
-				k.cap = QString::fromWCharArray(d.cap);
-				m_keys.append(k);
-			}
-			x += d.w;
+			const KeyDef& d = tab[i];
+			KeyBox k;
+			k.r = QRect(int(ox + d.x1 * s) + 1, int(oy + d.y1 * s) + 1,
+				int((d.x2 - d.x1 + 1) * s) - 2, int((d.y2 - d.y1 + 1) * s) - 2);
+			k.vk = d.vk;
+			k.cap = QString::fromWCharArray(d.cap);
+			m_keys.append(k);
 		}
-		m_layW = width();
-		m_layH = height();
+		m_layW = width(); m_layH = height();
 	}
 
 	int KeyboardView::HitTest(const QPointF& p)
@@ -222,8 +396,18 @@ namespace GameEditor
 		if (m_layW != width() || m_layH != height() || m_keys.isEmpty())
 			BuildLayout();
 		QPainter p(this);
-		p.setRenderHint(QPainter::Antialiasing, false);
-		p.fillRect(rect(), QColor(32, 32, 32));
+		p.setRenderHint(QPainter::Antialiasing, true);
+		p.fillRect(rect(), QColor(22, 22, 22));   // 参考图底色
+
+		const QImage& bg = (m_var == 1) ? m_bg104 : m_bg;
+		const bool hasImg = !bg.isNull();
+		if (hasImg)
+			p.drawImage(QRectF(m_ox, m_oy, kImgW * m_scale, kImgH * m_scale), bg);
+
+		QFont f = font();
+		f.setPointSize(8);
+		p.setFont(f);
+		const int rad = std::max(2, int(3 * m_scale));
 
 		for (int i = 0; i < m_keys.size(); ++i)
 		{
@@ -247,32 +431,77 @@ namespace GameEditor
 				}
 			}
 			const bool sel = !isMod && k.vk > 0 && k.vk == m_selVk;
+			const bool hot = k.vk > 0 && i == m_hot;
 
-			QColor fill(62, 62, 62), txt(255, 255, 255), edge(90, 90, 90);
-			if (k.vk == 0) { fill = QColor(42, 42, 42); txt = QColor(140, 140, 140); }
-			else if (bind) fill = QColor(28, 92, 150);
-			else if (modOn) { fill = QColor(0, 120, 215); txt = Qt::white; }
-			if (k.vk > 0 && i == m_hot)
-				fill = fill.lighter(130);
+			// 没有参考图时退化为代码绘制键帽（保底可读）
+			if (!hasImg)
+			{
+				QColor fill(43, 43, 43), txt(158, 158, 158), edge(56, 56, 56);
+				if (k.vk == 0) { fill = QColor(35, 35, 35); txt = QColor(105, 105, 105); }
+				QLinearGradient g(k.r.topLeft(), k.r.bottomLeft());
+				g.setColorAt(0, fill.lighter(115));
+				g.setColorAt(1, fill);
+				p.setPen(QPen(edge, 1));
+				p.setBrush(g);
+				p.drawRoundedRect(k.r, rad, rad);
+				p.setPen(txt);
+				p.drawText(k.r.adjusted(4, 2, -2, 0), Qt::AlignLeft | Qt::AlignTop, k.cap);
+			}
 
-			p.setBrush(fill);
-			p.setPen(sel ? QPen(QColor(0, 160, 255), 2) : QPen(edge, 1));
-			p.drawRoundedRect(k.r, 4, 4);
-			p.setPen(txt);
-			QFont f = font();
-			f.setPointSize(8);
-			p.setFont(f);
-			p.drawText(k.r.adjusted(4, 2, -2, 0), Qt::AlignLeft | Qt::AlignTop, k.cap);
 			if (bind)
 			{
-				p.drawText(k.r.adjusted(2, 0, -2, -3), Qt::AlignHCenter | Qt::AlignBottom,
-					QFontMetrics(f).elidedText(bind->name, Qt::ElideRight, k.r.width() - 6));
+				// 绑定了快捷键：高亮按钮（蓝色渐变）+ 命令名
+				QLinearGradient g(k.r.topLeft(), k.r.bottomLeft());
+				g.setColorAt(0, QColor(64, 148, 240));
+				g.setColorAt(1, QColor(24, 92, 168));
+				p.setPen(QPen(QColor(90, 175, 255), 1));
+				p.setBrush(g);
+				p.drawRoundedRect(k.r, rad, rad);
+				p.setPen(Qt::white);
+				p.drawText(k.r.adjusted(3, 1, -1, 0), Qt::AlignLeft | Qt::AlignTop, k.cap);
+				// 键面小，命令名用更小字号，尽量多显示几个字
+				QFont nf = f;
+				nf.setPointSizeF(std::max(6.5, f.pointSizeF() - 1.5));
+				p.setFont(nf);
+				p.drawText(k.r.adjusted(1, 0, -1, -2), Qt::AlignHCenter | Qt::AlignBottom,
+					QFontMetrics(nf).elidedText(bind->name, Qt::ElideRight, k.r.width() - 4));
+				p.setFont(f);
+			}
+			else if (modOn)
+			{
+				// 激活的修饰键：琥珀色高亮
+				QLinearGradient g(k.r.topLeft(), k.r.bottomLeft());
+				g.setColorAt(0, QColor(240, 176, 64));
+				g.setColorAt(1, QColor(190, 126, 20));
+				p.setPen(QPen(QColor(255, 205, 120), 1));
+				p.setBrush(g);
+				p.drawRoundedRect(k.r, rad, rad);
+				p.setPen(QColor(30, 24, 8));
+				p.drawText(k.r.adjusted(4, 2, -2, 0), Qt::AlignLeft | Qt::AlignTop, k.cap);
+			}
+			else if (!hasImg && k.vk == 0)
+			{
+				// 无图兜底：不可指派键的淡显已在上面画过
+			}
+
+			if (hot && k.vk > 0 && !bind && !modOn)
+			{
+				p.setPen(Qt::NoPen);
+				p.setBrush(QColor(255, 255, 255, 36));
+				p.drawRoundedRect(k.r, rad, rad);
+			}
+			if (sel)
+			{
+				p.setBrush(Qt::NoBrush);
+				p.setPen(QPen(QColor(0, 170, 255), 2));
+				p.drawRoundedRect(k.r.adjusted(1, 1, -1, -1), rad, rad);
 			}
 			if (otherMod && !bind)
 			{
-				p.setBrush(QColor(0, 120, 215));
+				// 该键绑定在别的修饰键组合上：右上角小圆点提示
+				p.setBrush(QColor(0, 140, 255));
 				p.setPen(Qt::NoPen);
-				p.drawEllipse(QPoint(k.r.right() - 8, k.r.top() + 8), 3, 3);
+				p.drawEllipse(QPoint(k.r.right() - 6, k.r.top() + 6), 3, 3);
 			}
 		}
 	}
@@ -321,7 +550,7 @@ namespace GameEditor
 		: QDialog(parent)
 	{
 		setWindowTitle(tr("设置"));
-		resize(760, 620);
+		resize(860, 660);
 
 		auto* root = new QVBoxLayout(this);
 		root->setContentsMargins(10, 8, 10, 8);
@@ -339,8 +568,31 @@ namespace GameEditor
 		auto* v1 = new QVBoxLayout(m_page[0]);
 		v1->setContentsMargins(0, 0, 0, 0);
 		v1->setSpacing(6);
+
+		// 键盘布局切换：82 键 / 104 键（两种参考图同尺寸，直接换底图与键位表）
+		auto* kbRow = new QHBoxLayout;
+		kbRow->addWidget(new QLabel(tr("键盘布局"), m_page[0]));
+		auto* b82 = new QToolButton(m_page[0]);
+		auto* b104 = new QToolButton(m_page[0]);
+		b82->setText(tr("82 键"));
+		b104->setText(tr("104 键"));
+		b82->setCheckable(true);
+		b104->setCheckable(true);
+		b82->setChecked(m_kb->Variant() == 0);
+		b104->setChecked(m_kb->Variant() == 1);
+		b82->setStyleSheet("QToolButton:checked{background:#0a5cad;color:white;border:1px solid #2b7bd3;}");
+		b104->setStyleSheet("QToolButton:checked{background:#0a5cad;color:white;border:1px solid #2b7bd3;}");
+		connect(b82, &QToolButton::clicked, this, [this, b82, b104]
+			{ b82->setChecked(true); b104->setChecked(false); m_kb->SetVariant(0); });
+		connect(b104, &QToolButton::clicked, this, [this, b82, b104]
+			{ b104->setChecked(true); b82->setChecked(false); m_kb->SetVariant(1); });
+		kbRow->addWidget(b82);
+		kbRow->addWidget(b104);
+		kbRow->addStretch();
+		v1->addLayout(kbRow);
+
 		m_kb = new KeyboardView(m_page[0]);
-		m_kb->setMinimumHeight(310);
+		m_kb->setMinimumHeight(248);
 		connect(m_kb, &KeyboardView::SelectionChanged, this, [this] { UpdateInfo(); });
 		v1->addWidget(m_kb);
 		m_info = new QLabel(m_page[0]);
@@ -374,7 +626,7 @@ namespace GameEditor
 		v1->addLayout(row);
 
 		auto* hint = new QLabel(tr("提示：在列表中选择命令，点击键盘上的按键，再点“指派”。"
-			"点击 Shift / Ctrl / Alt 可切换修饰键。"), m_page[0]);
+			"点击 Shift / Ctrl / Alt 可切换修饰键。蓝色键 = 已绑定快捷键，琥珀色 = 激活的修饰键。"), m_page[0]);
 		hint->setWordWrap(true);
 		hint->setStyleSheet("color:#a8a8ac;");
 		v1->addWidget(hint);

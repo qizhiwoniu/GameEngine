@@ -3,4 +3,8 @@
   <qresource prefix="/icons">
     <file alias="logo.ico">icons/logo.ico</file>
   </qresource>
+  <qresource prefix="/images">
+    <file alias="keyboard82dark.png">Image/KEYBOARD-82Dark.png</file>
+    <file alias="keyboard104dark.png">Image/KEYBOARD-104Dark.png</file>
+  </qresource>
 </RCC>
