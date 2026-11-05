@@ -11,13 +11,6 @@
 
 namespace
 {
-    // 排障/验收辅助：GE_SHOW_SETTINGS=1 时启动后自动打开"设置"窗口
-    void MaybeAutoShowSettings(GameEditor::EditorWindow* win)
-    {
-        if (qEnvironmentVariableIsSet("GE_SHOW_SETTINGS"))
-            QTimer::singleShot(2500, win, [win] { win->OpenSettings(); });
-    }
-
     // Windows GUI 程序的 qWarning/qDebug 默认只发到 OutputDebugString（调试器），
     // 命令行重定向 stderr 收不到。装一个处理器把日志转发到 stderr，
     // 这样"D:\...\GameEngine.exe >log.txt 2>&1"就能收集诊断信息。
@@ -61,17 +54,5 @@ int main(int argc, char* argv[])
 
     auto win = std::make_unique<GameEditor::EditorWindow>();
     win->show();
-    MaybeAutoShowSettings(win.get());
-
-    // 排障/验收辅助：GE_TEST_LOCK=1 时启动后自测"锁定布局→解锁布局"后的面板显隐
-    if (qEnvironmentVariableIsSet("GE_TEST_LOCK"))
-    {
-        QTimer::singleShot(3000, win.get(), [w = win.get()]
-            {
-                w->SelfTestLock();
-                QCoreApplication::quit();
-            });
-    }
-
     return app.exec();
 }
