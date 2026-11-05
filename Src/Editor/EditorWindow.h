@@ -12,6 +12,7 @@ class QToolBar;
 class QAction;
 class QToolButton;
 class QSpinBox;
+class QSlider;
 class QMenu;
 class QDockWidget;
 class QStackedWidget;
@@ -23,6 +24,7 @@ namespace GameEditor
 	class TimelineWidget;
 	class SettingsDialog;
 	class RuntimeWindow;
+	class ViewCubeDialog;
 
 	// 3DMax 风格主编辑器窗口（纯 Qt6 外壳 + SDL3 中央视口）
 	class EditorWindow : public QMainWindow
@@ -95,6 +97,11 @@ namespace GameEditor
 		void OnExportObj();
 		void OnExportPng();
 
+		// ---- 右上角视图方块（ViewCube）外观 ----
+		void LoadViewCubeSettings();                    // 启动时读配置
+		void ApplyViewCube(int sizePx, int alphaPct);   // sizePx=0 表示自动；同步工具条 + 窗口 + 写配置
+		void OpenViewCubeDialog();
+
 		// 菜单 / 工具条动作
 		QAction* m_actPlay = nullptr;    // 指向工具条的"播放/暂停"（与菜单状态互相同步）
 		QAction* m_actMagnet = nullptr;
@@ -128,6 +135,16 @@ namespace GameEditor
 		SettingsDialog* m_settings = nullptr;
 		bool m_autoSave = true;
 		int  m_autoSaveMinutes = 10;
+
+		// 右上角视图方块外观（sizePx=0 自动）
+		int            m_vcSize = 0;
+		int            m_vcAlpha = 100;
+		QSlider*       m_vcSizeSlider = nullptr;    // 工具条上的两个滑块
+		QSlider*       m_vcAlphaSlider = nullptr;
+		QLabel*        m_vcSizeVal = nullptr;
+		QLabel*        m_vcAlphaVal = nullptr;
+		QAction*       m_vcAuto = nullptr;          // 工具条上的"自动"开关
+		QPointer<ViewCubeDialog> m_vcDialog;
 
 		// 当前文档（.yu）；空 = 未命名
 		QString m_docPath;

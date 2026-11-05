@@ -7,6 +7,7 @@
 #include "SceneLink.h"
 #include "TimelineWidget.h"
 #include "SettingsDialog.h"
+#include "ViewCubeDialog.h"
 #include "Hotkeys.h"
 #include "SceneIO.h"
 
@@ -27,6 +28,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QStatusBar>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -106,6 +108,7 @@ namespace GameEditor
 		BuildMenus();
 		BuildToolBar();
 		BuildDocks();
+		LoadViewCubeSettings();   // 工具条的滑块 / 开关按上次的值初始化
 		RestoreLayout();      // 上次"保存布局"的结果（没有则保持默认）
 
 		connect(m_viewport, &Viewport3D::SelectionChanged,
@@ -272,6 +275,8 @@ namespace GameEditor
 					t->setMovable(!on);
 			});
 		mView->addSeparator();
+		mView->addAction(tr("ViewCube 设置…"), this, &EditorWindow::OpenViewCubeDialog);
+		mView->addSeparator();
 		// 工具栏 / 窗口的显示隐藏入口（动作在 BuildDocks 末尾统一填充）
 		m_menuBars = mView->addMenu(tr("工具栏"));
 		m_menuWindows = mView->addMenu(tr("窗口"));
@@ -420,6 +425,74 @@ namespace GameEditor
 		connect(aFps, &QAction::toggled, this, [this](bool on) { m_viewport->SetShowFps(on); });
 		b4->addSeparator();
 		b4->addAction(Make(Icon::Home, ic), tr("重置视角"), this, [this] { m_viewport->ResetCamera(); });
+
+		// ---- 工具栏5：ViewCube 外观（大小 / 透明度）----
+		QToolBar* b5 = MakeBar(tr("工具栏5"));
+		b5->addAction(Make(Icon::Wire, ic), tr("ViewCube 设置…"),
+			this, &EditorWindow::OpenViewCubeDialog);
+
+		auto* labSize = new QLabel(tr(" 大小 "));
+		labSize->setStyleSheet("color:#c8c8ce;");
+		b5->addWidget(labSize);
+		m_vcSizeSlider = new QSlider(Qt::Horizontal);
+		m_vcSizeSlider->setRange(12, 60);
+		m_vcSizeSlider->setValue(28);
+		m_vcSizeSlider->setFixedWidth(96);
+		m_vcSizeSlider->setToolTip(tr("视图方块的半边长（像素）"));
+		b5->addWidget(m_vcSizeSlider);
+		m_vcSizeVal = new QLabel;
+		m_vcSizeVal->setMinimumWidth(48);
+		m_vcSizeVal->setStyleSheet("color:#9fd8a0; font-weight:bold;");
+		b5->addWidget(m_vcSizeVal);
+
+		m_vcAuto = b5->addAction(tr("自动"));
+		m_vcAuto->setCheckable(true);
+		m_vcAuto->setChecked(true);
+		m_vcAuto->setToolTip(tr("大小跟随视口自动缩放"));
+
+		auto* labAlpha = new QLabel(tr("  透明 "));
+		labAlpha->setStyleSheet("color:#c8c8ce;");
+		b5->addWidget(labAlpha);
+		m_vcAlphaSlider = new QSlider(Qt::Horizontal);
+		m_vcAlphaSlider->setRange(15, 100);
+		m_vcAlphaSlider->setValue(100);
+		m_vcAlphaSlider->setFixedWidth(96);
+		m_vcAlphaSlider->setToolTip(tr("视图方块的透明度"));
+		b5->addWidget(m_vcAlphaSlider);
+		m_vcAlphaVal = new QLabel;
+		m_vcAlphaVal->setMinimumWidth(48);
+		m_vcAlphaVal->setStyleSheet("color:#9fd8a0; font-weight:bold;");
+		b5->addWidget(m_vcAlphaVal);
+
+		// 滑块的默认样式在暗色主题下几乎看不见，单独调一下
+		const QString sliderQss =
+			"QSlider::groove:horizontal { height:4px; background:#3a3a40; border-radius:2px; }"
+			"QSlider::sub-page:horizontal { background:#5b8def; border-radius:2px; }"
+			"QSlider::handle:horizontal { width:12px; margin:-5px 0; border-radius:6px;"
+			" background:#d8d8dc; }"
+			"QSlider::handle:horizontal:hover { background:#ffffff; }"
+			"QSlider::groove:horizontal:disabled { background:#2c2c31; }";
+		m_vcSizeSlider->setStyleSheet(sliderQss);
+		m_vcAlphaSlider->setStyleSheet(sliderQss);
+
+		// 滑块 / 自动开关 -> 统一入口（ApplyViewCube 内部会回写控件，用信号阻断防成环）
+		connect(m_vcSizeSlider, &QSlider::valueChanged, this, [this](int v)
+			{
+				if (m_vcAuto->isChecked())
+				{
+					QSignalBlocker autoBlock(m_vcAuto);
+					m_vcAuto->setChecked(false);       // 拖动大小即视为手动
+				}
+				ApplyViewCube(v, m_vcAlpha);
+			});
+		connect(m_vcAlphaSlider, &QSlider::valueChanged, this, [this](int v)
+			{
+				ApplyViewCube(m_vcSize, v);
+			});
+		connect(m_vcAuto, &QAction::toggled, this, [this](bool on)
+			{
+				ApplyViewCube(on ? 0 : m_vcSizeSlider->value(), m_vcAlpha);
+			});
 	}
 
 	void EditorWindow::BuildDocks()
@@ -1205,5 +1278,57 @@ namespace GameEditor
 			QMessageBox::warning(this, tr("导出"), err);
 		else
 			statusBar()->showMessage(tr("已保存截图：%1").arg(path), 5000);
+	}
+
+	// ================= 右上角视图方块（ViewCube）外观 =================
+	void EditorWindow::LoadViewCubeSettings()
+	{
+		QSettings s(QStringLiteral("GameEngine"), QStringLiteral("Editor"));
+		ApplyViewCube(s.value(QStringLiteral("viewcube/size"), 0).toInt(),
+			s.value(QStringLiteral("viewcube/alpha"), 100).toInt());
+	}
+
+	// 唯一的设置入口：视口 + 工具条 + 设置窗口 + 配置 一起同步
+	void EditorWindow::ApplyViewCube(int sizePx, int alphaPct)
+	{
+		m_vcSize = std::max(0, sizePx);
+		m_vcAlpha = std::clamp(alphaPct, 15, 100);
+		m_viewport->SetViewCubeSize(float(m_vcSize));          // 0 = 跟随视口自动
+		m_viewport->SetViewCubeOpacity(float(m_vcAlpha) / 100.f);
+
+		if (m_vcSizeSlider)
+		{
+			const bool autoSize = (m_vcSize == 0);
+			QSignalBlocker b1(m_vcSizeSlider);
+			QSignalBlocker b2(m_vcAlphaSlider);
+			QSignalBlocker b3(m_vcAuto);
+			m_vcSizeSlider->setEnabled(!autoSize);
+			if (!autoSize)
+				m_vcSizeSlider->setValue(m_vcSize);
+			m_vcAlphaSlider->setValue(m_vcAlpha);
+			m_vcAuto->setChecked(autoSize);
+			m_vcSizeVal->setText(autoSize ? tr("自动") : QStringLiteral("%1").arg(m_vcSize));
+			m_vcAlphaVal->setText(QStringLiteral("%1%").arg(m_vcAlpha));
+		}
+		if (m_vcDialog)
+			m_vcDialog->SetParams(m_vcSize, m_vcAlpha);
+
+		QSettings s(QStringLiteral("GameEngine"), QStringLiteral("Editor"));
+		s.setValue(QStringLiteral("viewcube/size"), m_vcSize);
+		s.setValue(QStringLiteral("viewcube/alpha"), m_vcAlpha);
+	}
+
+	void EditorWindow::OpenViewCubeDialog()
+	{
+		if (!m_vcDialog)
+		{
+			m_vcDialog = new ViewCubeDialog(this);
+			connect(m_vcDialog, &ViewCubeDialog::ParamsChanged, this, &EditorWindow::ApplyViewCube);
+			connect(m_vcDialog, &ViewCubeDialog::ResetRequested, this, [this] { ApplyViewCube(0, 100); });
+		}
+		m_vcDialog->SetParams(m_vcSize, m_vcAlpha);
+		m_vcDialog->show();
+		m_vcDialog->raise();
+		m_vcDialog->activateWindow();
 	}
 }

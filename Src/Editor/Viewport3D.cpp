@@ -315,6 +315,22 @@ namespace GameEditor
 	void Viewport3D::PushGrid()
 	{
 		const QColor major(58, 58, 64), minor(44, 44, 50);
+
+		// 正视 / 侧视（相机水平且正对坐标轴）时，地面网格侧棱对着相机只剩一条线，
+		// 画面几乎全黑。与 3ds Max 一致：把网格立起来画在与视线垂直的坐标面上。
+		const QVector3D fwd(std::sin(m_yaw), 0.f, std::cos(m_yaw));
+		if (std::abs(m_pitch) < 1e-3f && std::min(std::abs(fwd.x()), std::abs(fwd.z())) < 1e-3f)
+		{
+			const QVector3D u(std::cos(m_yaw), 0.f, -std::sin(m_yaw));   // 与视线垂直的水平轴
+			for (int i = -8; i <= 8; ++i)
+			{
+				const QColor& c = (i % 4 == 0) ? major : minor;
+				PushLine(u * float(i) + QVector3D(0, -8, 0), u * float(i) + QVector3D(0, 8, 0), c);
+				PushLine(QVector3D(0, float(i), 0) - u * 8.f, QVector3D(0, float(i), 0) + u * 8.f, c);
+			}
+			return;
+		}
+
 		for (int i = -8; i <= 8; ++i)
 		{
 			const QColor& c = (i % 4 == 0) ? major : minor;
@@ -563,6 +579,38 @@ namespace GameEditor
 		}
 
 		DrawAxisGizmo(p);   // 左下角方向标
+		DrawViewCube(p);    // 右上角视图方块
+	}
+
+	// ================= 右上角视图方块 =================
+	// 用视图矩阵的前两行取相机的右 / 上方向，方块朝向就和视口里的场景完全一致
+	// （正交俯视那种 up 退化的情形也一致，因为直接读的是矩阵而不是 yaw/pitch）。
+	void Viewport3D::UpdateViewCubeBasis()
+	{
+		UpdateMatrices();
+		const QVector3D right(m_view(0, 0), m_view(0, 1), m_view(0, 2));
+		const QVector3D up(m_view(1, 0), m_view(1, 1), m_view(1, 2));
+		const QVector3D eye(m_view(2, 0), m_view(2, 1), m_view(2, 2));   // 第三行 = −视线 = 指向眼睛
+		m_viewCube.SetViewportSize(size());
+		m_viewCube.SetCameraBasis(right, up, eye);
+	}
+
+	void Viewport3D::DrawViewCube(QPainter& p)
+	{
+		if (m_runtime != RuntimeMode::None)     // 运行时保持干净画面
+			return;
+		UpdateViewCubeBasis();
+		m_viewCube.Paint(p);
+	}
+
+	void Viewport3D::ApplyViewCubePick(const ViewCube::Block& b)
+	{
+		const QVector3D d = ViewCube::BlockToEyeDir(b);
+		// 世界方向 -> 轨道相机的 yaw / pitch（正上正下时方位角无意义，取 0）
+		const float horiz = std::hypot(d.x(), d.z());
+		m_yaw = horiz < 1e-4f ? 0.f : std::atan2(d.x(), d.z());
+		m_pitch = std::clamp(std::asin(std::clamp(d.y(), -1.f, 1.f)), -1.5f, 1.5f);
+		RenderNow();
 	}
 
 	// 左下角方向标：把世界 X/Y/Z 方向按当前相机旋转投到屏幕上，长度固定像素，
@@ -1212,6 +1260,16 @@ namespace GameEditor
 		}
 		else if (e->button() == Qt::LeftButton)
 		{
+			// 右上角视图方块：先于拾取 / 框选判定，点中就不再走选择逻辑
+			UpdateViewCubeBasis();
+			if (const ViewCube::Block b = m_viewCube.HitTest(e->position()); b.Valid())
+			{
+				m_drag = DragMode::ViewCube;
+				m_dragButton = e->button();
+				QWidget::mousePressEvent(e);
+				return;
+			}
+
 			int sub = 0;
 			const int axis = GizmoHitTest(e->position(), &sub);
 			if (m_tool != Tool::Select && !m_selection.empty() && axis != -1)
@@ -1266,6 +1324,11 @@ namespace GameEditor
 				m_pitch = std::clamp(m_pitch + dy * 0.006f, -1.5f, 1.5f);
 				RenderNow();
 				break;
+			case DragMode::ViewCube:            // 拖动方块 = 环绕相机，手感与右键拖动一致
+				m_yaw -= dx * 0.008f;
+				m_pitch = std::clamp(m_pitch + dy * 0.006f, -1.5f, 1.5f);
+				RenderNow();
+				break;
 			case DragMode::Pan:
 			{
 				UpdateMatrices();
@@ -1296,6 +1359,18 @@ namespace GameEditor
 			default:
 				break;
 		}
+
+		// 悬停视图方块时高亮对应的块（只在非拖动状态更新）
+		if (m_drag == DragMode::None && m_runtime == RuntimeMode::None)
+		{
+			UpdateViewCubeBasis();
+			const ViewCube::Block hover = m_viewCube.HitTest(p);
+			if (hover != m_viewCube.Hover())
+			{
+				m_viewCube.SetHover(hover);
+				update();                   // 帧图没变，只重画叠加层
+			}
+		}
 		QWidget::mouseMoveEvent(e);
 	}
 
@@ -1303,6 +1378,22 @@ namespace GameEditor
 	{
 		if (m_runtime == RuntimeMode::Project)
 			return;
+
+		// 视图方块：没拖动就是"点某一块切视角"
+		if (m_drag == DragMode::ViewCube)
+		{
+			if (!m_dragMoved)
+			{
+				if (const ViewCube::Block b = m_viewCube.HitTest(e->position()); b.Valid())
+					ApplyViewCubePick(b);
+			}
+			m_drag = DragMode::None;
+			m_dragButton = Qt::NoButton;
+			setCursor(Qt::ArrowCursor);
+			QWidget::mouseReleaseEvent(e);
+			return;
+		}
+
 		if (e->button() == Qt::LeftButton && m_runtime == RuntimeMode::None)
 		{
 			if (m_drag == DragMode::Gizmo)
@@ -1416,5 +1507,16 @@ namespace GameEditor
 			RenderNow();
 		}
 		e->accept();
+	}
+
+	void Viewport3D::leaveEvent(QEvent* e)
+	{
+		// 鼠标移出视口后悬停高亮会留在方块上，这里清掉重画一次
+		if (m_viewCube.Hover().Valid())
+		{
+			m_viewCube.SetHover({});
+			update();
+		}
+		QWidget::leaveEvent(e);
 	}
 }

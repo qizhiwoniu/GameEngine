@@ -7,6 +7,7 @@
 #include <string>
 
 #include "Hotkeys.h"
+#include "ViewCube.h"
 
 class QLabel;
 class QPainter;
@@ -79,6 +80,12 @@ namespace GameEditor
 		Tool    GetTool() const { return m_tool; }
 		void    ResetCamera();                                // 回到默认 3D 视角
 
+		// ---- 右上角视图方块（ViewCube）外观 ----
+		void SetViewCubeSize(float px)    { m_viewCube.SetScalePx(px); update(); }   // <=0 = 自动
+		void SetViewCubeOpacity(float a)  { m_viewCube.SetOpacity(a); update(); }
+		float ViewCubeSize() const        { return m_viewCube.ScalePx(); }
+		float ViewCubeOpacity() const     { return m_viewCube.Opacity(); }
+
 		// ---- 运行模式（Run Scene / Run Project）----
 		void        EnterRuntime(RuntimeMode mode);           // 进入运行：清选择、按模式设叠加显示、开始重力模拟
 		RuntimeMode Runtime() const { return m_runtime; }
@@ -97,6 +104,7 @@ namespace GameEditor
 		void mouseMoveEvent(QMouseEvent*) override;
 		void mouseReleaseEvent(QMouseEvent*) override;
 		void wheelEvent(QWheelEvent*) override;
+		void leaveEvent(QEvent*) override;                  // 鼠标离开视口：清掉视图方块的悬停高亮
 
 	private:
 		// ---- 渲染 ----
@@ -104,6 +112,9 @@ namespace GameEditor
 		void BuildFrame();
 		void DrawOverlay(QPainter& p);                      // 左上角状态文字（直接画在帧上）
 		void DrawAxisGizmo(QPainter& p);                    // 左下角方向标（随相机旋转，固定像素尺寸）
+		void DrawViewCube(QPainter& p);                     // 右上角视图方块（点面/棱/角切换视角）
+		void UpdateViewCubeBasis();                         // 把相机基向量喂给视图方块
+		void ApplyViewCubePick(const ViewCube::Block& b);    // 点中某一块 -> 改 yaw / pitch
 		void PushTri(const QVector3D& a, const QVector3D& b, const QVector3D& c, const QColor& col);
 		void PushLine(const QVector3D& a, const QVector3D& b, const QColor& col);
 		void PushLineNoOffset(const QVector3D& a, const QVector3D& b, const QColor& col);
@@ -151,7 +162,7 @@ namespace GameEditor
 		QMatrix4x4 m_view, m_proj, m_vp, m_invVp;
 
 		// 鼠标状态
-		enum class DragMode { None, Orbit, Pan, BoxSelect, Gizmo };
+		enum class DragMode { None, Orbit, Pan, BoxSelect, Gizmo, ViewCube };
 		DragMode  m_drag = DragMode::None;
 		QPointF   m_lastPos, m_pressPos;
 		bool      m_dragMoved = false;                      // 区分点击与框选
@@ -169,6 +180,9 @@ namespace GameEditor
 		// 从右向左拖 = 碰到就选中（crossing），与 3ds Max 一致。
 		QPointF m_bandStart, m_bandEnd;
 		bool    m_bandActive = false;
+
+		// 右上角视图方块（只画 + 命中测试，相机状态仍由本类的 m_yaw / m_pitch 管）
+		ViewCube m_viewCube;
 
 		// FPS 统计
 		int    m_frames = 0;
