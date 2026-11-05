@@ -59,8 +59,12 @@ namespace GameEditor
 		setAttribute(Qt::WA_NativeWindow);
 		// 注意：不能设 WA_PaintOnScreen！它会让整个顶层窗口退回"直接上屏"模式，
 		// 兄弟控件（停靠面板等）将永远得不到绘制（白块，且 RedrawWindow 也救不回来）。
-		// 这里改为：普通原生子窗口 + OpaquePaintEvent，paintEvent 什么都不画，
-		// 像素完全由 D3D12 交换链 Present；Qt 只在脏区域回拷，不影响 D3D 内容。
+		//
+		// 渲染路径：D3D12 渲染到离屏纹理 -> 回读成 QImage -> paintEvent 里
+		// 用 QPainter 整片贴上去。全程不碰窗口 HWND、不建交换链，
+		// 窗口合成完全交给 Qt，菜单栏/停靠面板/最小化还原都正常。
+		// 因为 paintEvent 会把整个客户区都涂满，可以安全开 OpaquePaintEvent
+		// 省掉一次背景擦除。
 		setAttribute(Qt::WA_OpaquePaintEvent);
 		setFocusPolicy(Qt::StrongFocus);
 		setMouseTracking(true);
@@ -72,12 +76,6 @@ namespace GameEditor
 		timer->setInterval(33);
 		connect(timer, &QTimer::timeout, this, [this] { if (m_showFps && isVisible()) RenderNow(); });
 		timer->start();
-
-		// 左上角状态叠加层：低频刷新位置/内容（跟随面板显隐引起的布局变化）
-		auto* otimer = new QTimer(this);
-		otimer->setInterval(100);
-		connect(otimer, &QTimer::timeout, this, &Viewport3D::UpdateOverlay);
-		otimer->start();
 
 		// 初始场景：Box001(红) / Box002(黄,选中) / Box003(蓝)
 		Obj b1; b1.name = "Box001"; b1.color = QColor(196, 78, 122);
@@ -96,7 +94,6 @@ namespace GameEditor
 
 	Viewport3D::~Viewport3D()
 	{
-		// m_overlayW 由 Qt 父子关系自动销毁
 		delete m_r;
 	}
 
@@ -111,12 +108,12 @@ namespace GameEditor
 				{
 					if (m_initialized)
 						return;
-					m_initialized = m_r->Init(reinterpret_cast<HWND>(winId()));
+					// 排障开关：GAMEENGINE_NO_D3D=1 完全不初始化 D3D（只剩 Qt 绘制），
+					// 用来区分"Qt 自身问题"和"D3D 渲染问题"。
+					static const bool noD3D = qEnvironmentVariableIsSet("GAMEENGINE_NO_D3D");
+					m_initialized = noD3D ? false : m_r->Init(reinterpret_cast<HWND>(winId()));
 					if (m_initialized)
-					{
-						EnsureOverlay();          // 左上角状态叠加层
 						RenderNow();
-					}
 				});
 		}
 	}
@@ -132,8 +129,20 @@ namespace GameEditor
 
 	void Viewport3D::paintEvent(QPaintEvent*)
 	{
-		// 故意不画：像素由 D3D12 Present（见构造函数里的说明）。
-		// Q_UNUSED 避免警告。
+		QPainter p(this);
+		const QImage& f = m_r->Frame();
+		if (!f.isNull())
+		{
+			if (f.size() == size())
+				p.drawImage(0, 0, f);
+			else
+				p.drawImage(rect(), f, f.rect());   // resize 后一帧的兜底拉伸
+		}
+		else
+		{
+			p.fillRect(rect(), QColor(30, 30, 33));
+		}
+		DrawOverlay(p);
 	}
 
 	// ================= 相机 / 投影 =================
@@ -465,6 +474,10 @@ namespace GameEditor
 	{
 		if (!m_initialized)
 			return;
+		// 排障开关：GAMEENGINE_NO_RENDER=1 时跳过实际渲染（区分初始化/渲染问题）
+		static const bool noRender = qEnvironmentVariableIsSet("GAMEENGINE_NO_RENDER");
+		if (noRender)
+			return;
 		BuildFrame();
 
 		// FPS 统计（左上角状态文字用）
@@ -476,77 +489,30 @@ namespace GameEditor
 			m_frames = 0;
 			m_fpsClock = now;
 		}
+
+		// 帧已经在 m_r->Frame() 里了，请 Qt 把它画出来
+		update();
 	}
 
-	// ================= 左上角状态叠加层 =================
-	// 左上角状态文字：画在一个无边框、半透明、点击穿透的 Qt Tool 顶层窗口上。
-	// - flip-model 交换链会把窗口 DC 上的 GDI 绘制全部盖掉，所以文字必须
-	//   位于独立 HWND；但 WS_CHILD 分层子窗口不支持 UpdateLayeredWindow，
-	//   裸 Win32 弹窗又会在主窗口移动/最小化时被系统回收（文字"自己消失"）。
-	// - Qt::Tool 顶层窗口由 Qt 作为 owned window 托管：自动跟随父窗口移动、
-	//   随父窗口最小化/还原；叠加 100ms 心跳兜底重新 show，不会永久丢失。
-	// - WA_TranslucentBackground 走 DWM 合成；点击穿透由
-	//   Qt::WindowTransparentForInput 保证。
-	namespace
+	// ================= 左上角状态文字 =================
+	// 直接画在帧图上（paintEvent 里 QPainter 画完 QImage 之后接着画文字）。
+	// 早期版本用过一个独立的 Qt::Tool 半透明顶层窗口，是因为 flip-model
+	// 交换链会把窗口 DC 上的 GDI 绘制全盖掉；现在不呈现到窗口了，没必要多开
+	// 一个 HWND —— 少一个窗口就少一处显隐不同步。
+	void Viewport3D::DrawOverlay(QPainter& p)
 	{
-		class OverlayWidget : public QWidget
-		{
-		public:
-			struct Line { QString text; QColor color; int x = 0, y = 0; };
-			std::vector<Line> lines;
-			OverlayWidget(QWidget* parent = nullptr) : QWidget(parent)
-			{
-				setWindowFlags(Qt::Tool | Qt::FramelessWindowHint |
-					Qt::WindowTransparentForInput | Qt::NoDropShadowWindowHint);
-				setAttribute(Qt::WA_TranslucentBackground);
-				setAttribute(Qt::WA_ShowWithoutActivating);
-				setAttribute(Qt::WA_TransparentForMouseEvents);
-				setFixedSize(360, 90);
-			}
-		protected:
-			void paintEvent(QPaintEvent*) override
-			{
-				QPainter p(this);
-				QFont f = p.font();
-				f.setPointSizeF(9.5f);
-				p.setFont(f);
-				for (const Line& l : lines)
-				{
-					p.setPen(l.color);
-					p.drawText(QPoint(l.x, l.y), l.text);
-				}
-			}
-		};
-	}
-
-	void Viewport3D::EnsureOverlay()
-	{
-		if (m_overlayW)
+		if (!m_initialized)
 			return;
-		m_overlayW = new OverlayWidget(window());
-	}
+		QFont f = p.font();
+		f.setPointSizeF(9.5f);
+		p.setFont(f);
 
-	void Viewport3D::UpdateOverlay()
-	{
-		auto* ov = static_cast<OverlayWidget*>(m_overlayW);
-		if (!ov)
-			return;
-		if (!isVisible() || !m_initialized)
-		{
-			if (ov->isVisible())
-				ov->hide();
-			return;
-		}
-
-		// 组装文字行
-		using Line = OverlayWidget::Line;
-		std::vector<Line> lines;
-		lines.push_back({ QString("%1 + %2")
+		const QColor normal(198, 198, 204), on(159, 216, 160), off(112, 112, 120);
+		p.setPen(normal);
+		p.drawText(QPoint(8, 20), QString("%1 + %2")
 			.arg(m_ortho ? "orthographic" : "perspective")
-			.arg(m_wireFrame ? "wireframe" : "stand"),
-			QColor(198, 198, 204), 0, 14 });
+			.arg(m_wireFrame ? "wireframe" : "stand"));
 
-		// 第 2 行：工具 + snap/angle（开的亮绿、关的暗灰，与 Max 一致）
 		const char* toolName = "select";
 		switch (m_tool)
 		{
@@ -555,21 +521,21 @@ namespace GameEditor
 			case Tool::Scale:  toolName = "scale";  break;
 			default: break;
 		}
-		lines.push_back({ toolName, QColor(198, 198, 204), 0, 34 });
-		const QFontMetrics fm(ov->font());
+		p.setPen(normal);
+		p.drawText(QPoint(8, 40), QLatin1String(toolName));
+
+		const QFontMetrics fm(f);
 		const int tw = fm.horizontalAdvance(QLatin1String(toolName));
-		const QColor on(159, 216, 160), off(112, 112, 120);
-		lines.push_back({ m_snap ? "on" : "off", m_snap ? on : off, tw + 14, 34 });
-		lines.push_back({ m_angleSnap ? "on" : "off", m_angleSnap ? on : off, tw + 14 + 58, 34 });
+		p.setPen(m_snap ? on : off);
+		p.drawText(QPoint(8 + tw + 14, 40), m_snap ? "on" : "off");
+		p.setPen(m_angleSnap ? on : off);
+		p.drawText(QPoint(8 + tw + 14 + 58, 40), m_angleSnap ? "on" : "off");
 
 		if (m_showFps)
-			lines.push_back({ QString("FPS: %1").arg(m_fpsValue), on, 0, 54 });
-
-		ov->lines = std::move(lines);
-		ov->update();
-		ov->move(mapToGlobal(QPoint(8, 6)));
-		if (!ov->isVisible())
-			ov->show();
+		{
+			p.setPen(on);
+			p.drawText(QPoint(8, 60), QString("FPS: %1").arg(m_fpsValue));
+		}
 	}
 
 

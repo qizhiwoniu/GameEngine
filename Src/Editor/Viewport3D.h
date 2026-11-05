@@ -9,6 +9,7 @@
 #include "Hotkeys.h"
 
 class QLabel;
+class QPainter;
 class QJsonObject;
 struct SceneObject;
 
@@ -16,7 +17,7 @@ namespace GameEditor
 {
 	class D3D12Renderer;
 
-	// 中央 3D 视口：D3D12 真实渲染管线（设备 + 交换链绑在本控件 HWND 上）
+	// 中央 3D 视口：D3D12 离屏渲染 -> GPU 回读 -> QPainter 上屏。
 	// 交互：右键拖动=旋转轨道相机，中键拖动=平移，滚轮=缩放；
 	//       左键单击=拾取，左键拖动=框选（Shift 追加/移除）；
 	//       Q/W/E/R = 选择/移动/旋转/缩放 Gizmo 工具；键位可在"设置"里改。
@@ -90,8 +91,7 @@ namespace GameEditor
 		// ---- 渲染 ----
 		void RenderNow();
 		void BuildFrame();
-		void EnsureOverlay();                               // 左上角状态分层窗口
-		void UpdateOverlay();
+		void DrawOverlay(QPainter& p);                      // 左上角状态文字（直接画在帧上）
 		void PushTri(const QVector3D& a, const QVector3D& b, const QVector3D& c, const QColor& col);
 		void PushLine(const QVector3D& a, const QVector3D& b, const QColor& col);
 		void PushLineNoOffset(const QVector3D& a, const QVector3D& b, const QColor& col);
@@ -152,8 +152,8 @@ namespace GameEditor
 		float     m_gizmoStartAngle = 0.f;
 		Qt::MouseButtons m_dragButton = Qt::NoButton;
 
-		// 左键框选矩形：画进 D3D（QRubberBand 这类子控件会被 flip-model
-		// 交换链盖住，看不见）。从左向右拖 = 全包含才选中（window），
+		// 左键框选矩形：画进 D3D 帧里（与场景一起回读上屏）。
+		// 从左向右拖 = 全包含才选中（window），
 		// 从右向左拖 = 碰到就选中（crossing），与 3ds Max 一致。
 		QPointF m_bandStart, m_bandEnd;
 		bool    m_bandActive = false;
@@ -162,10 +162,5 @@ namespace GameEditor
 		int    m_frames = 0;
 		int    m_fpsValue = 0;
 		qint64 m_fpsClock = 0;
-
-		// 左上角状态叠加层：无边框、半透明、点击穿透的 Qt Tool 顶层窗口，
-		// 拥有者为当前顶层窗口（Qt 自动跟随移动 / 还原，DWM 合成不受
-		// flip-model 交换链盖 GDI 的影响，也不会像 Win32 弹窗那样被系统回收）
-		QWidget* m_overlayW = nullptr;
 	};
 }

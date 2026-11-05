@@ -1,13 +1,34 @@
 #include "EditorWindow.h"
 #include <QApplication>
+#include <QTimer>
 #include <QFont>
 #include <QIcon>
 #include <QString>
+#include <QtGlobal>
+#include <cstdio>
 #include <memory>
 #include <windows.h>
 
 namespace
 {
+    // Windows GUI 程序的 qWarning/qDebug 默认只发到 OutputDebugString（调试器），
+    // 命令行重定向 stderr 收不到。装一个处理器把日志转发到 stderr，
+    // 这样"D:\...\GameEngine.exe >log.txt 2>&1"就能收集诊断信息。
+    void StderrMessageHandler(QtMsgType type, const QMessageLogContext&, const QString& msg)
+    {
+        const char* level = "?";
+        switch (type)
+        {
+            case QtDebugMsg:    level = "D"; break;
+            case QtInfoMsg:     level = "I"; break;
+            case QtWarningMsg:  level = "W"; break;
+            case QtCriticalMsg: level = "C"; break;
+            case QtFatalMsg:    level = "F"; break;
+        }
+        std::fprintf(stderr, "[%s] %s\n", level, msg.toLocal8Bit().constData());
+        std::fflush(stderr);
+    }
+
     // 按显示器 DPI 感知：高分屏下界面不再被系统拉伸模糊
     void EnableDpiAwareness()
     {
@@ -21,6 +42,8 @@ namespace
 int main(int argc, char* argv[])
 {
     EnableDpiAwareness();
+
+    qInstallMessageHandler(StderrMessageHandler);
 
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("3DGameEngine"));
