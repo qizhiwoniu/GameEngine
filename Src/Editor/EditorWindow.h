@@ -28,6 +28,7 @@ namespace GameEditor
 		~EditorWindow() override;
 
 		void OpenSettings() { OnOpenSettings(); }   // 供自动验收（GE_SHOW_SETTINGS=1）等外部调用
+		void SelfTestLock();                        // 锁定/解锁后面板显隐自测（GE_TEST_LOCK=1）
 
 	private slots:
 		void OnPlay(bool play);

@@ -63,5 +63,15 @@ int main(int argc, char* argv[])
     win->show();
     MaybeAutoShowSettings(win.get());
 
+    // 排障/验收辅助：GE_TEST_LOCK=1 时启动后自测"锁定布局→解锁布局"后的面板显隐
+    if (qEnvironmentVariableIsSet("GE_TEST_LOCK"))
+    {
+        QTimer::singleShot(3000, win.get(), [w = win.get()]
+            {
+                w->SelfTestLock();
+                QCoreApplication::quit();
+            });
+    }
+
     return app.exec();
 }

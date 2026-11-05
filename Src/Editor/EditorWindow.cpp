@@ -241,7 +241,11 @@ namespace GameEditor
 		m_actLock->setCheckable(true);
 		connect(m_actLock, &QAction::toggled, this, [this](bool on)
 			{
-				const auto f = on ? QDockWidget::NoDockWidgetFeatures : QDockWidget::DockWidgetMovable;
+				// 必须始终保留 DockWidgetClosable：视图▸窗口用的是 toggleViewAction，
+				// 它走 close()/show()，面板没有 Closable 特性时 close() 会被静默拒绝，
+				// 表现为"锁定/解锁布局后窗口隐藏与显示失灵"。锁定只去掉可移动/可浮动。
+				const auto f = on ? QDockWidget::DockWidgetClosable
+				                  : QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable;
 				for (QDockWidget* d : m_docks)
 					d->setFeatures(f);
 				for (QToolBar* t : m_bars)
@@ -686,6 +690,31 @@ namespace GameEditor
 	}
 
 	// ---- 设置窗口 ----
+	void EditorWindow::SelfTestLock()
+	{
+		// 验证"锁定布局→解锁布局"后视图▸窗口的显隐开关仍然有效。
+		// 历史 bug：锁定曾设 NoDockWidgetFeatures（剥掉 Closable），解锁也只恢复
+		// Movable——toggleViewAction 走 close()，没有 Closable 的面板 close 被拒绝。
+		if (m_docks.isEmpty())
+		{
+			qWarning("SelfTest: no docks");
+			return;
+		}
+		auto step = [this](const char* what, bool expectVisible)
+		{
+			QDockWidget* d = m_docks.first();
+			d->toggleViewAction()->trigger();
+			const bool ok = d->isVisible() == expectVisible;
+			qWarning("SelfTest: %s => %s (visible=%d)", what, ok ? "OK" : "FAIL", (int)d->isVisible());
+		};
+		m_actLock->setChecked(true);          // 锁定
+		step("hide while locked", false);
+		step("show while locked", true);
+		m_actLock->setChecked(false);         // 解锁
+		step("hide after unlock", false);
+		step("show after unlock", true);
+	}
+
 	void EditorWindow::OnOpenSettings()
 	{
 		if (!m_settings)
