@@ -1,12 +1,16 @@
 #pragma once
 #include <QMainWindow>
 #include <QList>
+#include <QPointer>
+#include <QJsonArray>
+#include <QJsonObject>
 
 class QLabel;
 class QTableWidget;
 class QTreeWidget;
 class QToolBar;
 class QAction;
+class QToolButton;
 class QSpinBox;
 class QMenu;
 class QDockWidget;
@@ -18,6 +22,7 @@ namespace GameEditor
 	class SceneGraph2D;
 	class TimelineWidget;
 	class SettingsDialog;
+	class RuntimeWindow;
 
 	// 3DMax 风格主编辑器窗口（纯 Qt6 外壳 + SDL3 中央视口）
 	class EditorWindow : public QMainWindow
@@ -54,24 +59,70 @@ namespace GameEditor
 		void OnFileOpen();
 		void OnFileSave();
 		void OnFileSaveAs();
+		void OnRunScene();              // Player ▸ Run Scene（带网格/调试信息）
+		void OnRunProject();            // Player ▸ Run Project（只留 FPS）
+		void OnRunRestart();            // Player ▸ Restart（关掉重开）
+		void OnRunRefresh();            // Player ▸ Refresh（不关窗重载场景）
+		void OnRunShutdown();           // Player ▸ Shutdown（结束运行）
+		void OpenRuntime(bool project); // 打开运行窗口（同一时间只保留一个）
+		void SyncRuntimeActions();      // 按"是否正在运行"启用/禁用 Restart/Refresh/Shutdown
 		QToolBar* MakeBar(const QString& title);      // 建一个独立工具栏
 		void ShowBarMenu(const QPoint& globalPos);    // 工具栏空白处右键菜单
 		void SaveLayout();
 		void RestoreLayout();
 
+		// ---- 创建菜单 ----
+		void OnCreate2DScene();
+		void OnCreate3DScene();
+		void ShowPage(bool twoD);       // 切换中央页（0=3D 视口，1=2D 节点图）并同步工具栏按钮
+
+		// ---- 编辑菜单 ----
+		QJsonObject CaptureState() const;              // 当前文档快照（viewport + graph2d）
+		void RestoreState(const QJsonObject& s);
+		void PushUndo();                               // 操作前记录快照
+		void OnEditUndo();
+		void OnEditRedo();
+		void OnEditCut();
+		void OnEditCopy();
+		void OnEditPaste();
+		void OnEditSelectAll();
+		void Copy3DSelected();
+		void Paste3DClipboard();
+
+		// ---- 导入 / 导出 ----
+		void OnImport();
+		void OnExportJson();
+		void OnExportObj();
+		void OnExportPng();
+
 		// 菜单 / 工具条动作
-		QAction* m_actPlay = nullptr;
+		QAction* m_actPlay = nullptr;    // 指向工具条的"播放/暂停"（与菜单状态互相同步）
 		QAction* m_actMagnet = nullptr;
 		QAction* m_actLock = nullptr;
+		QToolButton* m_playBtn = nullptr;   // 动画面板上的播放按钮（与工具条同步）
 		QList<QToolBar*>    m_bars;         // 工具栏1..4
 		QList<QDockWidget*> m_docks;        // Create / 属性 / 动画 / 图层
 		QMenu* m_menuBars = nullptr;        // 视图 ▸ 工具栏
 		QMenu* m_menuWindows = nullptr;     // 视图 ▸ 窗口
 
+		// 运行窗口（Run Scene / Run Project）
+		QPointer<RuntimeWindow> m_runtime;
+		int  m_lastRunMode = 2;             // 1 = Scene, 2 = Project（Restart 用）
+		QAction* m_actRestart = nullptr;
+		QAction* m_actRefresh = nullptr;
+		QAction* m_actShutdown = nullptr;
+
 		// 中央视口（3D 场景 / 2D 节点图 二选一显示）
 		Viewport3D*     m_viewport = nullptr;
 		SceneGraph2D*   m_graph2d = nullptr;
 		QStackedWidget* m_centralStack = nullptr;
+		QAction*        m_act2D = nullptr;   // 工具栏 2D / 3D 视图模式（菜单切页时同步勾选）
+		QAction*        m_act3D = nullptr;
+
+		// 撤销 / 重做（整篇文档快照，仅由菜单类编辑操作记录）与 3D 剪贴板
+		QList<QJsonObject> m_undo;
+		QList<QJsonObject> m_redo;
+		QJsonArray         m_clipObjs;
 
 		// 设置窗口（懒创建）
 		SettingsDialog* m_settings = nullptr;

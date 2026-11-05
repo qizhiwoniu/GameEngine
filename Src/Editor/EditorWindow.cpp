@@ -1,12 +1,14 @@
 #include "EditorWindow.h"
 #include "AppIcons.h"
 #include "Document.h"
+#include "RuntimeWindow.h"
 #include "Viewport3D.h"
 #include "SceneGraph2D.h"
 #include "SceneLink.h"
 #include "TimelineWidget.h"
 #include "SettingsDialog.h"
 #include "Hotkeys.h"
+#include "SceneIO.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -22,7 +24,10 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QSignalBlocker>
+#include <QStatusBar>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStyleFactory>
@@ -76,7 +81,12 @@ namespace GameEditor
 		}
 	}
 
-	EditorWindow::~EditorWindow() = default;
+	EditorWindow::~EditorWindow()
+	{
+		// 运行窗口是独立顶层窗口，主窗口关闭时要跟着一起退出
+		if (m_runtime)
+			m_runtime->close();
+	}
 
 	EditorWindow::EditorWindow()
 	{
@@ -198,8 +208,13 @@ namespace GameEditor
 		mFile->addAction(tr("保存(&S)"), QKeySequence::Save, this, &EditorWindow::OnFileSave);
 		mFile->addAction(tr("另存为..."), this, &EditorWindow::OnFileSaveAs);
 		mFile->addSeparator();
-		mFile->addAction(tr("导入"));
-		mFile->addAction(tr("导出"));
+		QMenu* mImport = mFile->addMenu(tr("导入"));
+		mImport->addAction(tr("模型 (OBJ)..."), this, &EditorWindow::OnImport);
+		mImport->addAction(tr("场景 (JSON)..."), this, &EditorWindow::OnFileOpen);
+		QMenu* mExport = mFile->addMenu(tr("导出"));
+		mExport->addAction(tr("场景 (JSON)..."), this, &EditorWindow::OnExportJson);
+		mExport->addAction(tr("模型 (OBJ)..."), this, &EditorWindow::OnExportObj);
+		mExport->addAction(tr("视口截图 (PNG)..."), this, &EditorWindow::OnExportPng);
 		mFile->addSeparator();
 		mFile->addAction(tr("首选项"), this, &EditorWindow::OnOpenSettings);
 		mFile->addSeparator();
@@ -207,18 +222,21 @@ namespace GameEditor
 
 		// ---- 编辑(E) ----
 		QMenu* mEdit = mb->addMenu(tr("编辑(&E)"));
-		mEdit->addAction(tr("Undo"), QKeySequence::Undo);
-		mEdit->addAction(tr("Redo"), QKeySequence::Redo);
+		mEdit->addAction(tr("Undo"), QKeySequence::Undo, this, &EditorWindow::OnEditUndo);
+		mEdit->addAction(tr("Redo"), QKeySequence::Redo, this, &EditorWindow::OnEditRedo);
 		mEdit->addSeparator();
-		mEdit->addAction(tr("剪切"), QKeySequence::Cut);
-		mEdit->addAction(tr("复制"), QKeySequence::Copy);
-		mEdit->addAction(tr("粘贴"), QKeySequence::Paste);
+		// 剪切 / 复制 / 粘贴 按当前页面分发：2D 页走节点图，3D 页走对象
+		mEdit->addAction(tr("剪切"), QKeySequence::Cut, this, &EditorWindow::OnEditCut);
+		mEdit->addAction(tr("复制"), QKeySequence::Copy, this, &EditorWindow::OnEditCopy);
+		mEdit->addAction(tr("粘贴"), QKeySequence::Paste, this, &EditorWindow::OnEditPaste);
+		mEdit->addAction(tr("全选"), QKeySequence::SelectAll, this, &EditorWindow::OnEditSelectAll);
 		mEdit->addSeparator();
 		// 按当前页面分发：2D 节点图页删节点，3D 页删对象。
 		// 之前固定删 3D 选中——在 2D 页按 Delete 时删的是 3D 的选中对象，
 		// 纯逻辑节点（时间/运行输出）永远删不掉，还可能删错对象。
 		mEdit->addAction(tr("删除"), QKeySequence::Delete, this, [this]
 			{
+				PushUndo();
 				if (m_centralStack->currentWidget() == static_cast<QWidget*>(m_graph2d))
 					m_graph2d->DeleteSelected();
 				else
@@ -227,11 +245,13 @@ namespace GameEditor
 			});
 
 		// ---- 创建(C) ----
+		// 2D / 3D 场景都是彻底空白的新场景：不预置节点、不预置物体、不随机摆放
 		QMenu* mCreate = mb->addMenu(tr("创建(&C)"));
-		mCreate->addAction(tr("2D场景"));
-		mCreate->addAction(tr("3D场景"));
-		mCreate->addAction(tr("方块"), this, [this] { m_viewport->AddBox(); RefreshLayers(); });
-		mCreate->addAction(tr("平面"), this, [this] { m_viewport->AddPlane(); RefreshLayers(); });
+		mCreate->addAction(tr("2D场景"), this, &EditorWindow::OnCreate2DScene);
+		mCreate->addAction(tr("3D场景"), this, &EditorWindow::OnCreate3DScene);
+		mCreate->addSeparator();
+		mCreate->addAction(tr("方块"), this, [this] { PushUndo(); m_viewport->AddBox(); RefreshLayers(); });
+		mCreate->addAction(tr("平面"), this, [this] { PushUndo(); m_viewport->AddPlane(); RefreshLayers(); });
 		mCreate->addAction(tr("动画"));
 
 		// ---- 视图(V) ----
@@ -257,15 +277,28 @@ namespace GameEditor
 		m_menuWindows = mView->addMenu(tr("窗口"));
 
 		// ---- Player(P) ----
+		// Run Scene   = 运行当前场景（保留网格 / 坐标轴 / 调试信息）
+		// Run Project = 运行整个项目（隐藏网格等编辑器参数，只显示 FPS）
+		// 快捷键：F8 = Run Scene，F9 = Run Project，F5 = 刷新，F10 = 结束
+		// 快捷键必须是 ApplicationShortcut：运行窗口是独立顶层窗口，
+		// 它在前台时默认的 WindowShortcut 只认主窗口，按键会全部失效
 		QMenu* mPlayer = mb->addMenu(tr("Player(&P)"));
-		mPlayer->addAction(tr("Run Project"));
-		m_actPlay = mPlayer->addAction(tr("Run Scene"), QKeySequence(Qt::Key_Space));
-		m_actPlay->setCheckable(true);
-		connect(m_actPlay, &QAction::toggled, this, &EditorWindow::OnPlay);
+		auto appKey = [](QAction* a) { a->setShortcutContext(Qt::ApplicationShortcut); return a; };
+		appKey(mPlayer->addAction(tr("Run Project"), QKeySequence(Qt::Key_F9), this, &EditorWindow::OnRunProject));
+		appKey(mPlayer->addAction(tr("Run Scene"), QKeySequence(Qt::Key_F8), this, &EditorWindow::OnRunScene));
 		mPlayer->addSeparator();
-		mPlayer->addAction(tr("Restart"));
-		mPlayer->addAction(tr("Refresh"));
-		mPlayer->addAction(tr("Shutdown"), qApp, &QApplication::quit);
+		m_actRestart = appKey(mPlayer->addAction(tr("Restart"), QKeySequence(QStringLiteral("F6")),
+			this, &EditorWindow::OnRunRestart));
+		m_actRestart->setToolTip(tr("关掉运行窗口并按上次的模式重新运行"));
+		m_actRefresh = appKey(mPlayer->addAction(tr("Refresh"), QKeySequence(Qt::Key_F5),
+			this, &EditorWindow::OnRunRefresh));
+		m_actRefresh->setToolTip(tr("不关窗口，重新载入编辑器里的场景并重置模拟"));
+		m_actShutdown = appKey(mPlayer->addAction(tr("Shutdown"), QKeySequence(Qt::Key_F10),
+			this, &EditorWindow::OnRunShutdown));
+		m_actShutdown->setToolTip(tr("结束运行，回到编辑器"));
+		// 打开菜单时按是否在运行刷新可用状态
+		connect(mPlayer, &QMenu::aboutToShow, this, &EditorWindow::SyncRuntimeActions);
+		SyncRuntimeActions();
 
 		// ---- 帮助(H)：用 cornerWidget 钉在菜单栏最右侧（对应 RAD 的 MainMenu2）----
 		QMenu* mHelp = new QMenu(mb);
@@ -335,6 +368,7 @@ namespace GameEditor
 		QAction* aPlay = b2->addAction(Make(Icon::Play, QColor(96, 200, 96)), tr("播放/暂停"));
 		aPlay->setCheckable(true);
 		connect(aPlay, &QAction::toggled, this, &EditorWindow::OnPlay);
+		m_actPlay = aPlay;   // 状态同步用（菜单里不再挂 Run Scene 到播放）
 		QAction* aNext = b2->addAction(Make(Icon::Next, ic), tr("下一帧"));
 		QAction* aEnd = b2->addAction(Make(Icon::SkipEnd, ic), tr("跳到结尾"));
 		b2->addSeparator();
@@ -349,6 +383,8 @@ namespace GameEditor
 		QToolBar* b3 = MakeBar(tr("工具栏3"));
 		QAction* t2d = b3->addAction(tr("2D"));
 		QAction* t3d = b3->addAction(tr("3D"));
+		m_act2D = t2d;      // 创建菜单切页时同步这两个按钮的勾选状态
+		m_act3D = t3d;
 		t2d->setCheckable(true);
 		t3d->setCheckable(true);
 		t3d->setChecked(true);
@@ -453,6 +489,7 @@ namespace GameEditor
 		auto* playBtn = mkBtn(Icon::Play, QColor(96, 200, 96), tr("播放/暂停"));
 		playBtn->setCheckable(true);
 		row1->addWidget(playBtn);
+		m_playBtn = playBtn;
 		row1->addWidget(mkBtn(Icon::Next, ic, tr("下一帧")));
 		row1->addWidget(mkBtn(Icon::SkipEnd, ic, tr("跳到结尾")));
 		row1->addWidget(mkBtn(Icon::Loop, QColor(96, 200, 96), tr("循环")));
@@ -660,10 +697,16 @@ namespace GameEditor
 	void EditorWindow::OnPlay(bool play)
 	{
 		m_playing = play;
+		// 工具条 / 动画面板两个播放按钮互相同步（屏蔽信号避免递归）
 		if (m_actPlay && m_actPlay->isChecked() != play)
 		{
 			QSignalBlocker b(m_actPlay);
 			m_actPlay->setChecked(play);
+		}
+		if (m_playBtn && m_playBtn->isChecked() != play)
+		{
+			QSignalBlocker b(m_playBtn);
+			m_playBtn->setChecked(play);
 		}
 		if (play && m_frame >= m_maxFrame)
 			m_frame = 0;
@@ -811,5 +854,356 @@ namespace GameEditor
 		}
 		m_docPath = fixed;
 		UpdateTitle();
+	}
+
+	// ================= 运行（Run Scene / Run Project） =================
+	void EditorWindow::OnRunScene()
+	{
+		OpenRuntime(false);
+	}
+
+	void EditorWindow::OnRunProject()
+	{
+		OpenRuntime(true);
+	}
+
+	void EditorWindow::OnRunRestart()
+	{
+		OpenRuntime(m_lastRunMode == 2);
+	}
+
+	void EditorWindow::OnRunRefresh()
+	{
+		if (m_runtime)
+			m_runtime->Refresh();
+	}
+
+	void EditorWindow::OnRunShutdown()
+	{
+		if (m_runtime)
+			m_runtime->close();
+	}
+
+	void EditorWindow::SyncRuntimeActions()
+	{
+		const bool running = !m_runtime.isNull();
+		if (m_actRefresh)
+			m_actRefresh->setEnabled(running);
+		if (m_actShutdown)
+			m_actShutdown->setEnabled(running);
+		// Restart 保持可用：没在运行时按上次模式直接启动
+	}
+
+	void EditorWindow::OpenRuntime(bool project)
+	{
+		m_lastRunMode = project ? 2 : 1;
+
+		// 同一时间只保留一个运行窗口
+		if (m_runtime)
+			m_runtime->close();
+
+		const QString name = m_docPath.isEmpty()
+			? tr("未命名")
+			: QFileInfo(m_docPath).completeBaseName();
+		const QString title = (project ? tr("Run Project - %1") : tr("Run Scene - %1")).arg(name);
+
+		auto* win = new RuntimeWindow(m_viewport,
+			project ? Viewport3D::RuntimeMode::Project : Viewport3D::RuntimeMode::Scene,
+			title);
+		m_runtime = win;
+		connect(win, &QObject::destroyed, this, &EditorWindow::SyncRuntimeActions);
+		win->show();
+		win->raise();
+		win->activateWindow();
+		SyncRuntimeActions();
+	}
+
+	// ================= 创建菜单 =================
+	void EditorWindow::ShowPage(bool twoD)
+	{
+		if (!m_centralStack)
+			return;
+		m_centralStack->setCurrentWidget(twoD ? static_cast<QWidget*>(m_graph2d)
+		                                     : static_cast<QWidget*>(m_viewport));
+		// 同步工具栏 2D / 3D 按钮（避免菜单切页后按钮还勾着旧状态）
+		if (m_act2D && m_act2D->isChecked() != twoD)
+		{
+			QSignalBlocker b(m_act2D);
+			m_act2D->setChecked(twoD);
+		}
+		if (m_act3D && m_act3D->isChecked() == twoD)
+		{
+			QSignalBlocker b(m_act3D);
+			m_act3D->setChecked(!twoD);
+		}
+		if (twoD)
+			m_graph2d->setFocus();
+		else
+			m_viewport->setFocus();
+	}
+
+	void EditorWindow::OnCreate2DScene()
+	{
+		PushUndo();
+		SceneLink::Reset();
+		m_viewport->LoadState(QJsonObject{});     // 2D 场景不需要 3D 对象
+		m_graph2d->ResetDocument();               // 空白节点图，不预置任何节点
+		ShowPage(true);
+		RefreshLayers();
+		m_docPath.clear();
+		UpdateTitle();
+	}
+
+	void EditorWindow::OnCreate3DScene()
+	{
+		PushUndo();
+		SceneLink::Reset();
+		m_viewport->LoadState(QJsonObject{});     // 清空对象，相机回默认
+		m_graph2d->ResetDocument();
+		m_viewport->SetView3D(true);
+		// 空白场景：不自动加地面 / 方块
+		ShowPage(false);
+		RefreshLayers();
+		m_docPath.clear();
+		UpdateTitle();
+	}
+
+	// ================= 编辑菜单：撤销 / 重做 =================
+	// 做法是整篇文档快照（3D 对象 + 2D 节点图）。只有走菜单/快捷键的编辑操作会记录，
+	// 视口里手动拖 gizmo 这类连续操作不单独记步，撤销会回到上一次快照。
+	QJsonObject EditorWindow::CaptureState() const
+	{
+		QJsonObject out;
+		QJsonObject vp;
+		m_viewport->SaveState(vp);
+		QJsonObject g;
+		m_graph2d->SaveState(g);
+		out["viewport"] = vp;
+		out["graph2d"] = g;
+		return out;
+	}
+
+	void EditorWindow::RestoreState(const QJsonObject& s)
+	{
+		SceneLink::Reset();
+		m_viewport->LoadState(s["viewport"].toObject());
+		m_graph2d->LoadState(s["graph2d"].toObject());
+		SceneLink::Reset();      // 载入的节点已带配对，不需要历史
+		RefreshLayers();
+	}
+
+	void EditorWindow::PushUndo()
+	{
+		m_undo.append(CaptureState());
+		while (m_undo.size() > 30)
+			m_undo.removeFirst();
+		m_redo.clear();
+	}
+
+	void EditorWindow::OnEditUndo()
+	{
+		if (m_undo.isEmpty())
+			return;
+		m_redo.append(CaptureState());
+		RestoreState(m_undo.takeLast());
+	}
+
+	void EditorWindow::OnEditRedo()
+	{
+		if (m_redo.isEmpty())
+			return;
+		m_undo.append(CaptureState());
+		RestoreState(m_redo.takeLast());
+	}
+
+	// ================= 编辑菜单：剪切 / 复制 / 粘贴 / 全选 =================
+	namespace
+	{
+		// 3D 剪贴板用 JSON 存对象，字段与 Viewport3D::SaveState 对齐
+		QJsonObject ObjToJson(const Viewport3D::Obj& o)
+		{
+			QJsonObject j;
+			j["kind"] = o.kind;
+			j["name"] = QString::fromStdString(o.name);
+			j["color"] = o.color.name();
+			j["pos"] = QJsonArray{ double(o.pos.x()), double(o.pos.y()), double(o.pos.z()) };
+			j["rot"] = QJsonArray{ double(o.rot.x()), double(o.rot.y()), double(o.rot.z()) };
+			j["size"] = QJsonArray{ double(o.size.x()), double(o.size.y()), double(o.size.z()) };
+			return j;
+		}
+
+		bool JsonToObj(const QJsonObject& j, Viewport3D::Obj& o)
+		{
+			const QJsonArray pos = j["pos"].toArray();
+			const QJsonArray rot = j["rot"].toArray();
+			const QJsonArray siz = j["size"].toArray();
+			if (pos.size() != 3 || rot.size() != 3 || siz.size() != 3)
+				return false;
+			o.kind = j["kind"].toInt();
+			o.name = j["name"].toString().toStdString();
+			o.color = QColor(j["color"].toString());
+			o.pos = QVector3D(float(pos.at(0).toDouble()), float(pos.at(1).toDouble()), float(pos.at(2).toDouble()));
+			o.rot = QVector3D(float(rot.at(0).toDouble()), float(rot.at(1).toDouble()), float(rot.at(2).toDouble()));
+			o.size = QVector3D(float(siz.at(0).toDouble()), float(siz.at(1).toDouble()), float(siz.at(2).toDouble()));
+			o.selected = false;
+			return true;
+		}
+	}
+
+	void EditorWindow::Copy3DSelected()
+	{
+		m_clipObjs = QJsonArray();
+		for (const auto& o : m_viewport->Objects())
+			if (o.selected)
+				m_clipObjs.append(ObjToJson(o));
+	}
+
+	void EditorWindow::Paste3DClipboard()
+	{
+		if (m_clipObjs.isEmpty())
+			return;
+		std::vector<int> uids;
+		for (const QJsonValue& v : m_clipObjs)
+		{
+			Viewport3D::Obj o;
+			if (!JsonToObj(v.toObject(), o))
+				continue;
+			o.pos += QVector3D(0.5f, 0.f, 0.5f);   // 错开一点，避免和原件完全重叠
+			uids.push_back(m_viewport->AddObjectRaw(o));
+		}
+		if (!uids.empty())
+			m_viewport->SelectByUids(uids);
+	}
+
+	void EditorWindow::OnEditCopy()
+	{
+		if (m_centralStack->currentWidget() == static_cast<QWidget*>(m_graph2d))
+			m_graph2d->CopyToClipboard();
+		else
+			Copy3DSelected();
+	}
+
+	void EditorWindow::OnEditCut()
+	{
+		PushUndo();
+		if (m_centralStack->currentWidget() == static_cast<QWidget*>(m_graph2d))
+		{
+			m_graph2d->CopyToClipboard();
+			m_graph2d->DeleteSelected();
+		}
+		else
+		{
+			Copy3DSelected();
+			m_viewport->DeleteSelected();
+		}
+		RefreshLayers();
+	}
+
+	void EditorWindow::OnEditPaste()
+	{
+		PushUndo();
+		if (m_centralStack->currentWidget() == static_cast<QWidget*>(m_graph2d))
+			m_graph2d->PasteAtCenter();
+		else
+		{
+			Paste3DClipboard();
+			RefreshLayers();
+		}
+	}
+
+	void EditorWindow::OnEditSelectAll()
+	{
+		if (m_centralStack->currentWidget() == static_cast<QWidget*>(m_graph2d))
+		{
+			m_graph2d->SelectAllNodes();
+			return;
+		}
+		std::vector<int> uids;
+		uids.reserve(m_viewport->Objects().size());
+		for (const auto& o : m_viewport->Objects())
+			uids.push_back(o.uid);
+		m_viewport->SelectByUids(uids);
+		RefreshLayers();
+	}
+
+	// ================= 导入 / 导出 =================
+	void EditorWindow::OnImport()
+	{
+		const QString path = QFileDialog::getOpenFileName(this, tr("导入模型"), QString(),
+			tr("OBJ 模型 (*.obj);;所有文件 (*)"));
+		if (path.isEmpty())
+			return;
+
+		PushUndo();
+		QString err;
+		const int n = SceneIO::ImportObj(path, m_viewport, &err);
+		if (n <= 0)
+		{
+			m_undo.removeLast();     // 什么都没导进来，别留一步空撤销
+			QMessageBox::warning(this, tr("导入"), err.isEmpty() ? tr("没有导入任何对象") : err);
+			return;
+		}
+		RefreshLayers();
+		statusBar()->showMessage(tr("已导入 %1 个对象：%2").arg(n).arg(QFileInfo(path).fileName()), 5000);
+	}
+
+	void EditorWindow::OnExportJson()
+	{
+		const QString base = m_docPath.isEmpty()
+			? QStringLiteral("scene")
+			: QFileInfo(m_docPath).completeBaseName();
+		QString path = QFileDialog::getSaveFileName(this, tr("导出场景 JSON"), base + ".json",
+			tr("JSON 场景 (*.json);;所有文件 (*)"));
+		if (path.isEmpty())
+			return;
+		if (!path.endsWith(".json", Qt::CaseInsensitive))
+			path += ".json";
+
+		QString err;
+		if (!SceneIO::ExportJson(path, m_viewport, m_graph2d, &err))
+			QMessageBox::warning(this, tr("导出"), err);
+		else
+			statusBar()->showMessage(tr("已导出场景：%1").arg(path), 5000);
+	}
+
+	void EditorWindow::OnExportObj()
+	{
+		const QString base = m_docPath.isEmpty()
+			? QStringLiteral("scene")
+			: QFileInfo(m_docPath).completeBaseName();
+		QString path = QFileDialog::getSaveFileName(this, tr("导出模型 OBJ"), base + ".obj",
+			tr("OBJ 模型 (*.obj);;所有文件 (*)"));
+		if (path.isEmpty())
+			return;
+		if (!path.endsWith(".obj", Qt::CaseInsensitive))
+			path += ".obj";
+
+		// 有选中就只导出选中，没有就整场景
+		const bool onlySel = m_viewport->SelectedCount() > 0;
+		QString err;
+		if (!SceneIO::ExportObj(path, m_viewport, onlySel, &err))
+			QMessageBox::warning(this, tr("导出"), err);
+		else
+			statusBar()->showMessage(onlySel ? tr("已导出选中对象：%1").arg(path)
+			                                 : tr("已导出全部对象：%1").arg(path), 5000);
+	}
+
+	void EditorWindow::OnExportPng()
+	{
+		const QString base = m_docPath.isEmpty()
+			? QStringLiteral("viewport")
+			: QFileInfo(m_docPath).completeBaseName();
+		QString path = QFileDialog::getSaveFileName(this, tr("导出视口截图"), base + ".png",
+			tr("PNG 图片 (*.png);;所有文件 (*)"));
+		if (path.isEmpty())
+			return;
+		if (!path.endsWith(".png", Qt::CaseInsensitive))
+			path += ".png";
+
+		QString err;
+		if (!SceneIO::ExportPng(path, m_viewport, &err))
+			QMessageBox::warning(this, tr("导出"), err);
+		else
+			statusBar()->showMessage(tr("已保存截图：%1").arg(path), 5000);
 	}
 }

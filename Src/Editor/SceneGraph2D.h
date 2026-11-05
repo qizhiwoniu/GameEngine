@@ -68,6 +68,11 @@ namespace GameEditor
 		// 删除选中节点（Delete 键 / 编辑菜单都会走到这里）
 		void DeleteSelected();
 
+		// ---- 编辑菜单 / 剪贴板（EditorWindow 调用）----
+		void CopyToClipboard() { CopySelected(); }   // 复制选中节点（含内部连线 / 组）
+		void PasteAtCenter();                        // 粘贴到视图中心
+		void SelectAllNodes();                       // 全选可见节点
+
 	protected:
 		void paintEvent(QPaintEvent*) override;
 		void resizeEvent(QResizeEvent*) override;

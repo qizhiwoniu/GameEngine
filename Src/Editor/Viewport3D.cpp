@@ -74,7 +74,18 @@ namespace GameEditor
 		// FPS 打开时才持续渲染（平时按需渲染）；页面切到 2D 节点图时暂停
 		auto* timer = new QTimer(this);
 		timer->setInterval(33);
-		connect(timer, &QTimer::timeout, this, [this] { if (m_showFps && isVisible()) RenderNow(); });
+		connect(timer, &QTimer::timeout, this, [this]
+			{
+				// 运行模式：固定步长推进物理并持续出帧
+				if (m_runtime != RuntimeMode::None)
+				{
+					StepPhysics(1.f / 30.f);
+					RenderNow();
+					return;
+				}
+				if (m_showFps && isVisible())
+					RenderNow();
+			});
 		timer->start();
 
 		// 初始场景：Box001(红) / Box002(黄,选中) / Box003(蓝)
@@ -312,13 +323,7 @@ namespace GameEditor
 		}
 	}
 
-	void Viewport3D::PushAxes()
-	{
-		PushLine({ 0,0.001f,0 }, { 1.4f,0.001f,0 }, QColor(214, 64, 64));
-		PushLine({ 0,0,0 }, { 0,1.4f,0 }, QColor(96, 200, 96));
-		PushLine({ 0,0.001f,0 }, { 0,0.001f,1.4f }, QColor(80, 120, 220));
-	}
-
+	// 世界原点的坐标轴改成视口左下角的方向标（见 DrawAxisGizmo），这里不再画
 	void Viewport3D::PushGizmo()
 	{
 		if (m_tool == Tool::Select || m_selection.empty())
@@ -419,10 +424,9 @@ namespace GameEditor
 		// 必须先 Begin（内部会清空顶点收集缓冲），再推入本帧几何
 		m_r->Begin(m_view.constData(), m_proj.constData(), 0.118f, 0.118f, 0.133f);
 
-		// 网格 / 坐标轴
+		// 网格（Run Project 隐藏一切编辑器辅助线）
 		if (m_showGrid)
 			PushGrid();
-		PushAxes();
 
 		// 物体
 		for (const Obj& o : m_objects)
@@ -436,12 +440,13 @@ namespace GameEditor
 			else
 			{
 				PushBoxFaces(corners, o.color);
-				if (o.selected)
+				if (o.selected && m_runtime == RuntimeMode::None)
 					PushBoxWire(corners, QColor(255, 214, 64));
 			}
 		}
 
-		PushGizmo();
+		if (m_runtime == RuntimeMode::None)
+			PushGizmo();
 
 		// 框选矩形：把 4 个屏幕角点反投影到近裁剪面上连线（不偏移）。
 		// 这些世界点的投影恰好回到原屏幕位置，透视/正交都精确；
@@ -507,6 +512,26 @@ namespace GameEditor
 		f.setPointSizeF(9.5f);
 		p.setFont(f);
 
+		// 运行模式：Run Project 只留 FPS，Run Scene 额外显示调试信息
+		if (m_runtime != RuntimeMode::None)
+		{
+			if (m_showFps)
+			{
+				p.setPen(QColor(159, 216, 160));
+				p.drawText(QPoint(8, 20), QString("FPS: %1").arg(m_fpsValue));
+			}
+			if (m_runtime == RuntimeMode::Scene)
+			{
+				p.setPen(QColor(198, 198, 204));
+				p.drawText(QPoint(8, 40), QString("objects: %1").arg(int(m_objects.size())));
+				p.drawText(QPoint(8, 58), QString("time: %1 s").arg(QString::number(double(m_simTime), 'f', 1)));
+				p.setPen(QColor(112, 112, 120));
+				p.drawText(QPoint(8, std::max(20, height() - 10)),
+					QStringLiteral("右键旋转   中键平移   滚轮缩放   ESC 退出"));
+			}
+			return;
+		}
+
 		const QColor normal(198, 198, 204), on(159, 216, 160), off(112, 112, 120);
 		p.setPen(normal);
 		p.drawText(QPoint(8, 20), QString("%1 + %2")
@@ -536,6 +561,57 @@ namespace GameEditor
 			p.setPen(on);
 			p.drawText(QPoint(8, 60), QString("FPS: %1").arg(m_fpsValue));
 		}
+
+		DrawAxisGizmo(p);   // 左下角方向标
+	}
+
+	// 左下角方向标：把世界 X/Y/Z 方向按当前相机旋转投到屏幕上，长度固定像素，
+	// 不随平移/缩放变化，也不占用场景中心。
+	void Viewport3D::DrawAxisGizmo(QPainter& p)
+	{
+		const float cx = 46.f;
+		const float cy = float(height()) - 54.f;
+		const float r = 24.f;
+		if (cy < 24.f)          // 视口太矮就别画了，避免压住状态文字
+			return;
+
+		struct Ax { QVector3D dir; QColor col; const char* name; };
+		const Ax axes[3] = {
+			{ { 1, 0, 0 }, QColor(214, 64, 64),  "X" },
+			{ { 0, 1, 0 }, QColor(96, 200, 96),  "Y" },
+			{ { 0, 0, 1 }, QColor(80, 130, 230), "Z" },
+		};
+
+		// 视图空间里 z 越小越远，远的先画
+		QVector3D view[3];
+		for (int i = 0; i < 3; ++i)
+			view[i] = m_view.mapVector(axes[i].dir);
+		int order[3] = { 0, 1, 2 };
+		std::sort(order, order + 3, [&](int a, int b) { return view[a].z() < view[b].z(); });
+
+		QFont f = p.font();
+		f.setPointSizeF(8.f);
+		p.setFont(f);
+
+		for (int k = 0; k < 3; ++k)
+		{
+			const int i = order[k];
+			const QVector3D v = view[i];
+			const QPointF tip(cx + v.x() * r, cy - v.y() * r);
+
+			// 正对相机（几乎退化成点）的轴淡一点，免得三条糊在一起
+			QColor c = axes[i].col;
+			c.setAlphaF(0.30f + 0.70f * std::clamp(qAbs(v.z()), 0.f, 1.f));
+			p.setPen(QPen(c, 2.f, Qt::SolidLine, Qt::RoundCap));
+			p.drawLine(QPointF(cx, cy), tip);
+
+			p.setPen(c);
+			p.drawText(QPointF(tip.x() + (v.x() >= 0.f ? 3.0 : -10.0),
+				tip.y() + (v.y() >= 0.f ? -3.0 : 11.0)), QLatin1String(axes[i].name));
+		}
+
+		p.setPen(QColor(150, 150, 158));
+		p.drawEllipse(QPointF(cx, cy), 1.8, 1.8);
 	}
 
 
@@ -814,9 +890,86 @@ namespace GameEditor
 		RenderNow();
 	}
 
+	// ================= 运行模式 =================
+	void Viewport3D::EnterRuntime(RuntimeMode mode)
+	{
+		m_runtime = mode;
+		m_selection.clear();
+		for (Obj& o : m_objects)
+			o.selected = false;
+		m_tool = Tool::Select;
+		m_snap = false;
+		m_angleSnap = false;
+		m_wireFrame = false;
+		m_drag = DragMode::None;
+		m_bandActive = false;
+
+		m_showGrid = (mode == RuntimeMode::Scene);  // 整项目运行不显示网格
+		m_showFps = true;
+
+		m_vel.assign(m_objects.size(), QVector3D());
+		m_simTime = 0.f;
+		m_frames = 0;
+		m_fpsClock = QDateTime::currentMSecsSinceEpoch();
+		RenderNow();
+	}
+
+	// 简单重力 + 地面接触：方块（kind=0）受重力，平面 （kind=1）作静态地面。
+	void Viewport3D::StepPhysics(float dt)
+	{
+		dt = std::clamp(dt, 0.f, 0.05f);
+		m_simTime += dt;
+
+		for (size_t i = 0; i < m_objects.size() && i < m_vel.size(); ++i)
+		{
+			Obj& o = m_objects[i];
+			if (o.kind != 0)
+				continue;
+
+			// 地面高度 = 世界 y=0 与各平面顶面中、不高于物体底面的最高者
+			const float bottom = o.pos.y() - o.size.y() * 0.5f;
+			float ground = 0.f;
+			for (const Obj& p : m_objects)
+			{
+				if (p.kind != 1)
+					continue;
+				const float top = p.pos.y() + p.size.y() * 0.5f;
+				if (top <= bottom + 0.02f)
+					ground = std::max(ground, top);
+			}
+
+			QVector3D& v = m_vel[i];
+			v.setY(v.y() + m_gravity * dt);
+			o.pos += v * dt;
+
+			if (o.pos.y() - o.size.y() * 0.5f <= ground)
+			{
+				o.pos.setY(ground + o.size.y() * 0.5f);
+				if (v.y() < -1.5f)          // 落地反弹，速度太小则停住
+				{
+					v.setY(-v.y() * 0.3f);
+					v.setX(v.x() * 0.8f);
+					v.setZ(v.z() * 0.8f);
+				}
+				else
+				{
+					v = QVector3D();
+				}
+			}
+		}
+	}
+
 	// ================= 键盘 =================
 	void Viewport3D::keyPressEvent(QKeyEvent* e)
 	{
+		// 运行时只认 ESC（退出运行窗口），编辑器快捷键一律屏蔽
+		if (m_runtime != RuntimeMode::None)
+		{
+			if (e->key() == Qt::Key_Escape)
+				emit RuntimeExitRequested();
+			return;
+		}
+
 		const int cmd = MatchHotkey(e->key(), int(e->modifiers()));
 		if (cmd < 0)
 		{
@@ -1035,6 +1188,13 @@ namespace GameEditor
 	void Viewport3D::mousePressEvent(QMouseEvent* e)
 	{
 		setFocus();
+		// Run Project：整项目运行，不接受任何鼠标输入
+		if (m_runtime == RuntimeMode::Project)
+			return;
+		// Run Scene：只放开相机操作（右键旋转 / 中键平移 / 滚轮缩放），
+		// 左键的拾取、框选、gizmo 一律不走
+		if (m_runtime == RuntimeMode::Scene && e->button() == Qt::LeftButton)
+			return;
 		m_pressPos = m_lastPos = e->position();
 		m_dragMoved = false;
 
@@ -1089,6 +1249,9 @@ namespace GameEditor
 
 	void Viewport3D::mouseMoveEvent(QMouseEvent* e)
 	{
+		// Project 完全锁死；Scene 允许拖拽相机（m_drag 只可能是 Orbit / Pan）
+		if (m_runtime == RuntimeMode::Project)
+			return;
 		const QPointF p = e->position();
 		const float dx = float(p.x() - m_lastPos.x());
 		const float dy = float(p.y() - m_lastPos.y());
@@ -1138,7 +1301,9 @@ namespace GameEditor
 
 	void Viewport3D::mouseReleaseEvent(QMouseEvent* e)
 	{
-		if (e->button() == Qt::LeftButton)
+		if (m_runtime == RuntimeMode::Project)
+			return;
+		if (e->button() == Qt::LeftButton && m_runtime == RuntimeMode::None)
 		{
 			if (m_drag == DragMode::Gizmo)
 			{
@@ -1242,6 +1407,8 @@ namespace GameEditor
 
 	void Viewport3D::wheelEvent(QWheelEvent* e)
 	{
+		if (m_runtime == RuntimeMode::Project)
+			return;
 		const float steps = float(e->angleDelta().y()) / 120.f;
 		if (std::abs(steps) > 0.01f)
 		{

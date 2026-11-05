@@ -27,6 +27,12 @@ namespace GameEditor
 	public:
 		enum class Tool { Select, Move, Rotate, Scale };
 
+		// 运行模式：
+		//   None    = 编辑器视口（可编辑、可选中、有 gizmo）
+		//   Scene   = Run Scene：运行当前场景，保留网格 / 坐标轴 / 调试信息
+		//   Project = Run Project：整项目运行，隐藏网格等编辑器参数，只显示 FPS
+		enum class RuntimeMode { None, Scene, Project };
+
 		struct Obj
 		{
 			std::string name;
@@ -73,9 +79,14 @@ namespace GameEditor
 		Tool    GetTool() const { return m_tool; }
 		void    ResetCamera();                                // 回到默认 3D 视角
 
+		// ---- 运行模式（Run Scene / Run Project）----
+		void        EnterRuntime(RuntimeMode mode);           // 进入运行：清选择、按模式设叠加显示、开始重力模拟
+		RuntimeMode Runtime() const { return m_runtime; }
+
 	signals:
 		void SelectionChanged(const QString& name);
 		void ToolChanged(int tool);
+		void RuntimeExitRequested();                          // 运行中按 ESC
 
 	protected:
 		void showEvent(QShowEvent*) override;
@@ -92,14 +103,15 @@ namespace GameEditor
 		void RenderNow();
 		void BuildFrame();
 		void DrawOverlay(QPainter& p);                      // 左上角状态文字（直接画在帧上）
+		void DrawAxisGizmo(QPainter& p);                    // 左下角方向标（随相机旋转，固定像素尺寸）
 		void PushTri(const QVector3D& a, const QVector3D& b, const QVector3D& c, const QColor& col);
 		void PushLine(const QVector3D& a, const QVector3D& b, const QColor& col);
 		void PushLineNoOffset(const QVector3D& a, const QVector3D& b, const QColor& col);
 		void PushBoxWire(const QVector3D corners[8], const QColor& col);
 		void PushBoxFaces(const QVector3D corners[8], const QColor& col);
 		void PushGrid();
-		void PushAxes();
 		void PushGizmo();
+		void StepPhysics(float dt);                         // 运行时的重力 / 地面碰撞
 
 		// ---- 相机 / 投影 ----
 		QVector3D EyePos() const;
@@ -162,5 +174,11 @@ namespace GameEditor
 		int    m_frames = 0;
 		int    m_fpsValue = 0;
 		qint64 m_fpsClock = 0;
+
+		// 运行状态 / 简单刚体（重力）
+		RuntimeMode m_runtime = RuntimeMode::None;
+		std::vector<QVector3D> m_vel;                       // 每个对象的线速度（与 m_objects 同序）
+		float   m_simTime = 0.f;                            // 运行时长（秒）
+		float   m_gravity = -20.f;                          // 重力加速度（与节点图"重力"节点默认值一致）
 	};
 }

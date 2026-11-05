@@ -1613,4 +1613,20 @@ namespace GameEditor
 	{
 		LoadState(QJsonObject{});
 	}
+
+	// ================= 编辑菜单入口 =================
+	void SceneGraph2D::PasteAtCenter()
+	{
+		// 菜单粘贴没有鼠标位置，落在视图中心
+		PasteAt(ToView(QPointF(width() * 0.5, height() * 0.5)));
+	}
+
+	void SceneGraph2D::SelectAllNodes()
+	{
+		ClearSel();
+		for (Node& n : m_nodes)
+			if (!NodeHidden(n))
+				n.sel = true;
+		update();
+	}
 }
