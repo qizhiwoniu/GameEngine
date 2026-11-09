@@ -10,6 +10,7 @@
 #include <QMouseEvent>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QKeySequence>
 #include <QPainter>
 #include <QPainterPath>
 #include <cmath>
@@ -102,11 +103,16 @@ namespace GameEditor
 			// 鼠标
 			{ QStringLiteral("鼠标"), QColor(150, 90, 110), 0, {},
 			  2, { { QStringLiteral("X"), ptNumber, 0.f }, { QStringLiteral("Y"), ptNumber, 0.f } } },
-			// 镜头
+			// 镜头（相机看向被驱动的方块，输入 = 注视点偏移）
 			{ QStringLiteral("镜头"), QColor(140, 110, 60), 3,
-			  { { QStringLiteral("位置X"), ptNumber, 0.f }, { QStringLiteral("位置Y"), ptNumber, 4.5f },
-				{ QStringLiteral("位置Z"), ptNumber, -11.f } },
+			  { { QStringLiteral("偏移X"), ptNumber, 0.f }, { QStringLiteral("偏移Y"), ptNumber, 0.4f },
+				{ QStringLiteral("偏移Z"), ptNumber, 0.f } },
 			  0, {} },
+			// 跳转精灵：3D 里的触发体，方块碰到就切关卡；位置/尺寸不接线就保持 3D 里摆的位置
+			{ QStringLiteral("跳转精灵"), QColor(70, 190, 180), 4,
+			  { { QStringLiteral("位置X"), ptNumber, 0.f }, { QStringLiteral("位置Y"), ptNumber, 0.75f },
+				{ QStringLiteral("位置Z"), ptNumber, 0.f }, { QStringLiteral("尺寸"), ptNumber, 1.5f } },
+			  1, { { QStringLiteral("物体"), ptObject, 0.f } } },
 		};
 		return D[(k >= 0 && k < NK_COUNT) ? k : 0];
 	}
@@ -119,7 +125,10 @@ namespace GameEditor
 
 	float SceneGraph2D::Node::Height() const
 	{
-		return kHeadH + (collapsed ? 0.f : kRowH * RowsOf(kind));
+		// 镜头块绑定了看向对象 / 跳转精灵有目标关卡时，底部多一行说明
+		const bool extraRow = (kind == nkCamera && !lookName.isEmpty()) || (kind == nkTrigger);
+		const float extra = extraRow ? kRowH : 0.f;
+		return kHeadH + (collapsed ? 0.f : kRowH * RowsOf(kind) + extra);
 	}
 
 	SceneGraph2D::SceneGraph2D(QWidget* parent)
@@ -487,6 +496,21 @@ namespace GameEditor
 			const QRectF row(r.left(), pt.y() - kRowH * 0.5f, r.width(), kRowH);
 			p.drawText(row.adjusted(14, 0, -14, 0), Qt::AlignVCenter | Qt::AlignLeft, d.in[k].name);
 		}
+		// 镜头块：看向对象显示在底部额外行
+		if (n.kind == nkCamera && !n.lookName.isEmpty())
+		{
+			p.setPen(QColor(255, 225, 160));
+			p.drawText(QRectF(r.left() + 10, r.bottom() - kRowH, r.width() - 20, kRowH),
+				Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("看向 ") + n.lookName);
+		}
+		// 跳转精灵：底部显示要跳到哪一关（空 = 自动下一关）
+		if (n.kind == nkTrigger)
+		{
+			p.setPen(QColor(150, 235, 225));
+			p.drawText(QRectF(r.left() + 10, r.bottom() - kRowH, r.width() - 20, kRowH),
+				Qt::AlignVCenter | Qt::AlignLeft,
+				QStringLiteral("→ ") + (n.target.isEmpty() ? QStringLiteral("自动下一关") : n.target));
+		}
 		for (int k = 0; k < d.nOut; ++k)
 		{
 			QPointF pt;
@@ -763,7 +787,11 @@ namespace GameEditor
 	QString SceneGraph2D::KeyNameOf(const Node& n) const
 	{
 		const int k = int(n.val[0] + 0.5f);
-		return kKeyNames[(k < 0 || k >= 14) ? 0 : k];
+		if (k >= 0 && k < 14)
+			return kKeyNames[k];
+		if (k >= 14)                             // 自定义键：val[0] 直接存 Qt::Key（字母 / 数字）
+			return QKeySequence(k).toString(QKeySequence::NativeText);
+		return kKeyNames[0];
 	}
 
 	void SceneGraph2D::EditKey(int id)
@@ -773,7 +801,7 @@ namespace GameEditor
 			return;
 		bool ok = false;
 		const QString s = QInputDialog::getText(this, QStringLiteral("按键"),
-			QStringLiteral("输入按键（W A S D 上 下 左 右 空格 Shift Ctrl Z X C）"),
+			QStringLiteral("输入按键（W A S D 上 下 左 右 空格 Shift Ctrl Z X C，或任意字母 / 数字）"),
 			QLineEdit::Normal, KeyNameOf(m_nodes[i]), &ok);
 		if (!ok)
 			return;
@@ -793,13 +821,26 @@ namespace GameEditor
 					for (int k = 0; k < 14; ++k)
 						if (kKeyNames[k] == QString::fromUtf8(e2[1]))
 							found = k;
+		// 自定义键：单个字母 / 数字，val[0] 直接存 Qt::Key（字母数字键码与 Windows VK 一致）
+		QChar custom = u'\0';
+		if (found < 0 && u.length() == 1)
+		{
+			const QChar ch = u.at(0).toUpper();
+			if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
+				custom = ch;
+		}
 		if (found >= 0)
 		{
 			m_nodes[i].val[0] = float(found);
 			update();
 		}
+		else if (custom != u'\0')
+		{
+			m_nodes[i].val[0] = float(custom.unicode());
+			update();
+		}
 		else
-			QMessageBox::information(this, QStringLiteral("按键"), QStringLiteral("无法识别的按键"));
+			QMessageBox::information(this, QStringLiteral("按键"), QStringLiteral("无法识别的按键（支持内置 14 键与任意字母 / 数字）"));
 	}
 
 	// ================= 组 =================
@@ -1278,12 +1319,17 @@ namespace GameEditor
 		QMenu menu(this);
 		menu.setStyleSheet(MenuStyle());
 
-		// ---- 创建（10 项：方块 … 运行输出）----
+		// ---- 创建（方块 / 平面 / 跳转精灵 在前，其余逻辑节点随后）----
 		QMenu* mc = menu.addMenu(QStringLiteral("创建"));
 		for (int k = 0; k < nkKeys; ++k)
 		{
 			QAction* a = mc->addAction(KindOf(k).name);
 			a->setData(100 + k);
+			if (k == nkPlane)                 // 平面之后插入跳转精灵（与创建菜单同序）
+			{
+				QAction* at2 = mc->addAction(KindOf(nkTrigger).name);
+				at2->setData(100 + nkTrigger);
+			}
 		}
 
 		// ---- 编辑 ----
@@ -1330,8 +1376,26 @@ namespace GameEditor
 
 		// ---- 镜头 ----
 		QMenu* mcam = menu.addMenu(QStringLiteral("镜头"));
-		QAction* aCam = mcam->addAction(QStringLiteral("位置 XYZ"));
+		QAction* aCam = mcam->addAction(QStringLiteral("看向方块"));
 		aCam->setData(51);
+		// 右键镜头块：选择它看向哪个 3D 方块（运行时相机注视点锁定该对象）
+		const int camIdx = menuNode ? FindNode(menuNode) : -1;
+		if (camIdx >= 0 && m_nodes[camIdx].kind == nkCamera && ObjLister)
+		{
+			QMenu* mlook = mcam->addMenu(QStringLiteral("看向"));
+			QAction* aAuto = mlook->addAction(QStringLiteral("自动（第一个被驱动的方块）"));
+			aAuto->setData(60);
+			aAuto->setCheckable(true);
+			aAuto->setChecked(m_nodes[camIdx].obj == 0);
+			const auto objs = ObjLister();
+			for (int i = 0; i < int(objs.size()) && i < 30; ++i)
+			{
+				QAction* a = mlook->addAction(objs[i].second);
+				a->setData(70 + i);
+				a->setCheckable(true);
+				a->setChecked(m_nodes[camIdx].obj == objs[i].first);
+			}
+		}
 
 		menu.addSeparator();
 		QAction* build = menu.addAction(QStringLiteral("rev 1525  创建菜单 10 项"));
@@ -1353,6 +1417,29 @@ namespace GameEditor
 		if (t >= 200 && t < 214)
 		{
 			SetKindValue(nkKeys, float(t - 200), at, menuNode);
+			return;
+		}
+		if (t == 60 || (t >= 70 && t < 100))          // 镜头块「看向」选择
+		{
+			if (camIdx >= 0 && m_nodes[camIdx].kind == nkCamera)
+			{
+				if (t == 60)
+				{
+					m_nodes[camIdx].obj = 0;
+					m_nodes[camIdx].lookName.clear();
+				}
+				else if (ObjLister)
+				{
+					const auto objs = ObjLister();
+					const int i = t - 70;
+					if (i < int(objs.size()))
+					{
+						m_nodes[camIdx].obj = objs[i].first;
+						m_nodes[camIdx].lookName = objs[i].second;
+					}
+				}
+				update();
+			}
 			return;
 		}
 		switch (t)
@@ -1389,16 +1476,20 @@ namespace GameEditor
 		out.clear();
 		for (const Node& n : m_nodes)
 		{
-			if (n.kind != nkBox && n.kind != nkPlane)
+			if (n.kind != nkBox && n.kind != nkPlane && n.kind != nkTrigger)
 				continue;
 			LinkInfo li;
 			li.id = n.id;
 			li.kind = n.kind;
 			li.obj = n.obj;
 			li.name = n.name;
+			li.target = n.target;
 			const KindDef& d = KindOf(n.kind);
 			for (int k = 0; k < 5; ++k)
 				li.v[k] = n.hasVal ? n.val[k] : d.in[k].def;
+			// 跳转精灵只有 4 个引脚（位置 XYZ + 尺寸），第 5 个值给 FromVals 当尺寸用
+			if (n.kind == nkTrigger)
+				li.v[4] = n.hasVal ? n.val[3] : 1.5f;
 			out.push_back(li);
 		}
 	}
@@ -1444,6 +1535,16 @@ namespace GameEditor
 		if (i >= 0 && m_nodes[i].name != name)
 		{
 			m_nodes[i].name = name;
+			update();
+		}
+	}
+
+	void SceneGraph2D::SetNodeTarget(int id, const QString& target)
+	{
+		const int i = FindNode(id);
+		if (i >= 0 && m_nodes[i].target != target)
+		{
+			m_nodes[i].target = target;
 			update();
 		}
 	}
@@ -1506,6 +1607,10 @@ namespace GameEditor
 			o["y"] = n.pos.y();
 			o["group"] = n.group;
 			o["obj"] = n.obj;
+			if (!n.lookName.isEmpty())
+				o["lookName"] = n.lookName;
+			if (!n.target.isEmpty())
+				o["target"] = n.target;
 			o["collapsed"] = n.collapsed;
 			o["hasVal"] = n.hasVal;
 			QJsonArray v;
@@ -1564,6 +1669,8 @@ namespace GameEditor
 			n.pos = QPointF(o["x"].toDouble(), o["y"].toDouble());
 			n.group = o["group"].toInt();
 			n.obj = o["obj"].toInt();
+			n.lookName = o["lookName"].toString();
+			n.target = o["target"].toString();
 			n.collapsed = o["collapsed"].toBool();
 			n.hasVal = o["hasVal"].toBool();
 			const QJsonArray vals = o["val"].toArray();

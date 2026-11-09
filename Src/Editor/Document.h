@@ -14,5 +14,12 @@ namespace GameEditor
 	{
 		bool Save(const QString& path, Viewport3D* v3d, SceneGraph2D* g2d, QString* err = nullptr);
 		bool Load(const QString& path, Viewport3D* v3d, SceneGraph2D* g2d, QString* err = nullptr);
+
+		// 关卡目录 = 工程根（含 CMakeLists.txt 的那层）下的 Levels 文件夹
+		QString LevelsDir();
+
+		// 运行窗口切关卡用：只把 .yu 拆成 viewport（对象 + 相机）与 graph2d 两份 JSON，
+		// 不创建 SceneGraph2D 控件、也不改动编辑器里的当前文档
+		bool LoadRuntime(const QString& path, QJsonObject& viewport, QJsonObject& graph, QString* err = nullptr);
 	}
 }

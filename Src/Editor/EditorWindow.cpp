@@ -14,13 +14,19 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QDesktopServices>
+#include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMenu>
 #include <QMessageBox>
@@ -38,6 +44,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QPalette>
 #include <QPushButton>
@@ -100,6 +107,18 @@ namespace GameEditor
 		LoadHotkeys();
 		m_viewport = new Viewport3D(this);
 		m_graph2d = new SceneGraph2D(this);
+		// 镜头块「看向」菜单需要 3D 方块列表（uid + 名称）
+		m_graph2d->ObjLister = [this]
+		{
+			std::vector<std::pair<int, QString>> out;
+			for (int i = 0; i < m_viewport->ObjectCount(); ++i)
+			{
+				const Viewport3D::Obj& o = m_viewport->ObjAt(i);
+				if (o.kind == 0)
+					out.emplace_back(o.uid, QString::fromStdString(o.name));
+			}
+			return out;
+		};
 		m_centralStack = new QStackedWidget(this);
 		m_centralStack->addWidget(m_viewport);      // index 0 = 3D 场景
 		m_centralStack->addWidget(m_graph2d);       // index 1 = 2D 节点图
@@ -113,6 +132,8 @@ namespace GameEditor
 
 		connect(m_viewport, &Viewport3D::SelectionChanged,
 			this, &EditorWindow::OnViewportSelection);
+		// 拖 gizmo 移动/旋转/缩放：开始真正改动前记一次快照，Ctrl+Z 才能回到拖动前
+		connect(m_viewport, &Viewport3D::EditStarted, this, &EditorWindow::PushUndo);
 
 		// 2D 节点图 <-> 3D 场景：双向配对（新建 / 删除 / 改名 / 变换 / 选中），
 		// 与 RAD 版 SceneLink 一样用轮询同步（100ms）
@@ -208,6 +229,12 @@ namespace GameEditor
 		mFile->addAction(tr("新建(&N)"), QKeySequence::New, this, &EditorWindow::OnFileNew);
 		mFile->addAction(tr("打开(&O)"), QKeySequence::Open, this, &EditorWindow::OnFileOpen);
 		mFile->addSeparator();
+		// Level = Levels 目录下的场景文件（Level01.yu / Level02.yu …）
+		mFile->addAction(tr("新建 Level..."), QKeySequence(QStringLiteral("Ctrl+Shift+N")),
+			this, &EditorWindow::OnNewLevel);
+		m_menuLevels = mFile->addMenu(tr("打开 Level"));
+		connect(m_menuLevels, &QMenu::aboutToShow, this, &EditorWindow::FillLevelMenu);
+		mFile->addSeparator();
 		mFile->addAction(tr("保存(&S)"), QKeySequence::Save, this, &EditorWindow::OnFileSave);
 		mFile->addAction(tr("另存为..."), this, &EditorWindow::OnFileSaveAs);
 		mFile->addSeparator();
@@ -255,6 +282,7 @@ namespace GameEditor
 		mCreate->addSeparator();
 		mCreate->addAction(tr("方块"), this, [this] { PushUndo(); m_viewport->AddBox(); RefreshLayers(); });
 		mCreate->addAction(tr("平面"), this, [this] { PushUndo(); m_viewport->AddPlane(); RefreshLayers(); });
+		mCreate->addAction(tr("跳转精灵"), this, [this] { PushUndo(); m_viewport->AddTrigger(); RefreshLayers(); });
 		mCreate->addAction(tr("动画"));
 
 		// ---- 视图(V) ----
@@ -535,6 +563,7 @@ namespace GameEditor
 		m_propTable->verticalHeader()->setVisible(false);
 		m_propTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		m_propTable->setAlternatingRowColors(true);
+		connect(m_propTable, &QTableWidget::itemChanged, this, &EditorWindow::OnPropItemChanged);
 		UpdatePropRow();
 		QDockWidget* dockProps = MakeDock(tr("属性"), m_propTable);
 		dockProps->setObjectName("dockProps");
@@ -746,10 +775,61 @@ namespace GameEditor
 	{
 		if (!m_propTable)
 			return;
+		m_propTable->blockSignals(true);        // 程序填充不触发 itemChanged
 		const QString name = m_viewport ? m_viewport->SelectedName() : QString();
+		const bool hasSel = m_viewport && m_viewport->SelectedCount() > 0;
+		const bool isTrigger = hasSel && m_viewport->SelectedKind() == 2;
+		if (m_propTable->rowCount() > 2)
+			m_propTable->removeCellWidget(2, 1);
+		m_propTable->setRowCount(isTrigger ? 3 : 2);
 		m_propTable->setItem(0, 0, new QTableWidgetItem(tr("选择")));
 		m_propTable->setItem(0, 1, new QTableWidgetItem(
 			name.isEmpty() ? tr("未选择物体") : name));
+
+		// 重力开关（默认开）：运行 Scene 时该物体是否下落
+		m_propTable->setItem(1, 0, new QTableWidgetItem(tr("重力")));
+		auto* g = new QTableWidgetItem();
+		g->setFlags((g->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+		g->setCheckState(hasSel && m_viewport->SelectedGravity() ? Qt::Checked : Qt::Unchecked);
+		g->setText(hasSel ? QString() : tr("—"));
+		g->setToolTip(tr("勾选后该物体在 Run Scene / Run Project 中受重力下落（新建物体默认勾选）"));
+		if (!hasSel)
+			g->setFlags(g->flags() & ~Qt::ItemIsEnabled);
+		m_propTable->setItem(1, 1, g);
+
+		// 跳转精灵：选目标关卡（空 = 自动下一关）
+		if (isTrigger)
+		{
+			m_propTable->setItem(2, 0, new QTableWidgetItem(tr("跳转关卡")));
+			auto* box = new QComboBox(m_propTable);
+			box->addItem(tr("自动（下一关）"), QString());
+			const QDir d(LevelsDir());
+			if (d.exists())
+				for (const QString& f : d.entryList(QStringList() << QStringLiteral("*.yu"), QDir::Files, QDir::Name))
+					box->addItem(f, f);
+			const QString cur = m_viewport->SelectedLevelTarget();
+			if (!cur.isEmpty())
+			{
+				if (box->findData(cur) < 0)      // 目标文件当前不在 Levels 目录里也保留显示
+					box->addItem(cur, cur);
+				box->setCurrentIndex(box->findData(cur));
+			}
+			box->setToolTip(tr("方块碰到这个跳转精灵时切到哪个关卡；选「自动」= Levels 目录里的下一关"));
+			connect(box, &QComboBox::currentIndexChanged, this, [this, box](int)
+				{
+					if (m_viewport)
+						m_viewport->SetSelectedLevelTarget(box->itemData(box->currentIndex()).toString());
+				});
+			m_propTable->setCellWidget(2, 1, box);
+		}
+		m_propTable->blockSignals(false);
+	}
+
+	void EditorWindow::OnPropItemChanged(QTableWidgetItem* item)
+	{
+		if (!item || item->row() != 1 || !m_viewport)
+			return;
+		m_viewport->SetSelectedGravity(item->checkState() == Qt::Checked);
 	}
 
 	// ---- 动画播放 ----
@@ -929,6 +1009,131 @@ namespace GameEditor
 		UpdateTitle();
 	}
 
+	// ================= Level（关卡 = Levels 目录下的 .yu 场景文件） =================
+	// 目录固定在"工程根目录/Levels"（从 exe 向上找 CMakeLists.txt 定位工程根）：
+	// 不会被清理 out/build 时连带删掉，用资源管理器也好找。
+	QString EditorWindow::LevelsDir() const
+	{
+		return Document::LevelsDir();
+	}
+
+	// 文件 ▸ 打开 Level 的列表：每次弹出前扫一遍 Levels 目录
+	void EditorWindow::FillLevelMenu()
+	{
+		if (!m_menuLevels)
+			return;
+		m_menuLevels->clear();
+
+		const QString dir = LevelsDir();
+		QDir d(dir);
+		const QStringList files = d.exists()
+			? d.entryList(QStringList() << QStringLiteral("*.yu"), QDir::Files, QDir::Name)
+			: QStringList();
+
+		if (files.isEmpty())
+		{
+			QAction* a = m_menuLevels->addAction(tr("（Levels 目录里还没有 .yu 场景）"));
+			a->setEnabled(false);
+		}
+		for (const QString& f : files)
+		{
+			const QString path = d.filePath(f);
+			QAction* a = m_menuLevels->addAction(f);
+			a->setCheckable(true);
+			a->setChecked(!m_docPath.isEmpty() && QFileInfo(path) == QFileInfo(m_docPath));
+			connect(a, &QAction::triggered, this, [this, path] { OpenLevelFile(path); });
+		}
+
+		m_menuLevels->addSeparator();
+		m_menuLevels->addAction(tr("新建 Level..."), this, &EditorWindow::OnNewLevel);
+		m_menuLevels->addAction(tr("打开 Level 文件夹"), this, [dir]
+			{
+				QDir().mkpath(dir);
+				QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+			});
+		m_menuLevels->addAction(tr("浏览文件..."), this, &EditorWindow::OnOpenLevel);
+	}
+
+	bool EditorWindow::OpenLevelFile(const QString& path)
+	{
+		QString err;
+		if (!Document::Load(path, m_viewport, m_graph2d, &err))
+		{
+			QMessageBox::warning(this, tr("打开 Level"), err);
+			return false;
+		}
+		m_docPath = path;
+		UpdateTitle();
+		RefreshLayers();
+		statusBar()->showMessage(tr("已打开 %1").arg(QFileInfo(path).fileName()), 3000);
+		return true;
+	}
+
+	void EditorWindow::OnOpenLevel()
+	{
+		const QString dir = LevelsDir();
+		QDir().mkpath(dir);
+		const QString path = QFileDialog::getOpenFileName(this, tr("打开 Level"), dir,
+			tr("场景文件 (*.yu);;所有文件 (*)"));
+		if (path.isEmpty())
+			return;
+		OpenLevelFile(path);
+	}
+
+	void EditorWindow::OnNewLevel()
+	{
+		const QString dir = LevelsDir();
+		QDir().mkpath(dir);
+
+		// 默认名字 = 第一个没被占用的 LevelNN（Level01 / Level02 …）
+		QString name = QStringLiteral("Level01");
+		for (int n = 1; n < 1000; ++n)
+		{
+			name = QStringLiteral("Level%1").arg(n, 2, 10, QLatin1Char('0'));
+			if (!QFile::exists(QDir(dir).filePath(name + QStringLiteral(".yu"))))
+				break;
+		}
+
+		bool ok = false;
+		const QString in = QInputDialog::getText(this, tr("新建 Level"),
+			tr("名称（保存到 %1）").arg(QDir::toNativeSeparators(dir)),
+			QLineEdit::Normal, name, &ok);
+		if (!ok)
+			return;
+
+		QString base = in.trimmed();
+		if (base.isEmpty())
+			return;
+		if (base.endsWith(QStringLiteral(".yu"), Qt::CaseInsensitive))
+			base.chop(3);
+		const QString path = QDir(dir).filePath(base + QStringLiteral(".yu"));
+
+		if (QFile::exists(path) &&
+			QMessageBox::question(this, tr("新建 Level"),
+				tr("%1 已存在，要覆盖吗？").arg(QFileInfo(path).fileName()),
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+			return;
+
+		// 新 Level = 空白 3D 场景（与 创建 ▸ 3D 场景 一致），先存盘再当作当前文档打开
+		PushUndo();
+		SceneLink::Reset();
+		m_viewport->LoadState(QJsonObject{});
+		m_graph2d->ResetDocument();
+		m_viewport->SetView3D(true);
+		ShowPage(false);
+		RefreshLayers();
+
+		QString err;
+		if (!Document::Save(path, m_viewport, m_graph2d, &err))
+		{
+			QMessageBox::warning(this, tr("新建 Level"), err);
+			return;
+		}
+		m_docPath = path;
+		UpdateTitle();
+		statusBar()->showMessage(tr("已新建 %1").arg(QFileInfo(path).fileName()), 3000);
+	}
+
 	// ================= 运行（Run Scene / Run Project） =================
 	void EditorWindow::OnRunScene()
 	{
@@ -948,7 +1153,12 @@ namespace GameEditor
 	void EditorWindow::OnRunRefresh()
 	{
 		if (m_runtime)
+		{
+			QJsonObject g;
+			m_graph2d->SaveState(g);
+			m_runtime->SetGraph(g);                         // 运行期间可能改过节点图
 			m_runtime->Refresh();
+		}
 	}
 
 	void EditorWindow::OnRunShutdown()
@@ -980,10 +1190,15 @@ namespace GameEditor
 			: QFileInfo(m_docPath).completeBaseName();
 		const QString title = (project ? tr("Run Project - %1") : tr("Run Scene - %1")).arg(name);
 
+		// 2D 节点图快照：运行时由它驱动（键盘 / 累加 / 重力 / 镜头）
+		QJsonObject g;
+		m_graph2d->SaveState(g);
+
 		auto* win = new RuntimeWindow(m_viewport,
 			project ? Viewport3D::RuntimeMode::Project : Viewport3D::RuntimeMode::Scene,
-			title);
+			title, g);
 		m_runtime = win;
+		win->SetLevelPath(m_docPath);              // 跳转精灵没写目标时用它算"下一关"
 		connect(win, &QObject::destroyed, this, &EditorWindow::SyncRuntimeActions);
 		win->show();
 		win->raise();

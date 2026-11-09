@@ -1,0 +1,145 @@
+{
+    "app": "3DGameEngine",
+    "format": "yu-scene",
+    "graph2d": {
+        "groupCounter": 0,
+        "groups": [
+        ],
+        "links": [
+            {
+                "from": 1,
+                "fromPin": 0,
+                "to": 3,
+                "toPin": 0
+            },
+            {
+                "from": 2,
+                "fromPin": 0,
+                "to": 3,
+                "toPin": 0
+            }
+        ],
+        "nextGroup": 1,
+        "nextId": 4,
+        "nodes": [
+            {
+                "collapsed": false,
+                "group": 0,
+                "hasVal": true,
+                "id": 1,
+                "kind": 1,
+                "name": "平面 1",
+                "obj": 1,
+                "val": [
+                    0,
+                    0,
+                    0.009999999776482582,
+                    0,
+                    1
+                ],
+                "x": -90.66265091734782,
+                "y": -196.38554611751493
+            },
+            {
+                "collapsed": false,
+                "group": 0,
+                "hasVal": false,
+                "id": 3,
+                "kind": 9,
+                "name": "运行输出 1",
+                "obj": 0,
+                "val": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ],
+                "x": 212.95181301893297,
+                "y": -144.5783161601337
+            },
+            {
+                "collapsed": false,
+                "group": 0,
+                "hasVal": true,
+                "id": 2,
+                "kind": 0,
+                "name": "方块 1",
+                "obj": 2,
+                "val": [
+                    0,
+                    0.5,
+                    1.731652021408081,
+                    0,
+                    1
+                ],
+                "x": -94.27710882135119,
+                "y": -12.048193013344473
+            }
+        ]
+    },
+    "version": 1,
+    "viewport": {
+        "camera": {
+            "dist": 8.000008583068848,
+            "ortho": false,
+            "pitch": 0.44999998807907104,
+            "tx": 1.0222527980804443,
+            "ty": 0.3697756826877594,
+            "tz": 0,
+            "wire": true,
+            "yaw": -3.720003366470337
+        },
+        "nextUid": 3,
+        "objects": [
+            {
+                "color": "#64a0d2",
+                "gravity": true,
+                "kind": 1,
+                "name": "平面 1",
+                "pos": [
+                    0,
+                    0.009999999776482582,
+                    0
+                ],
+                "rot": [
+                    0,
+                    0,
+                    0
+                ],
+                "size": [
+                    5,
+                    0.019999999552965164,
+                    5
+                ],
+                "solid": true,
+                "target": "",
+                "uid": 1
+            },
+            {
+                "color": "#d2aa50",
+                "gravity": true,
+                "kind": 0,
+                "name": "方块 1",
+                "pos": [
+                    0,
+                    1.731652021408081,
+                    0.5
+                ],
+                "rot": [
+                    0,
+                    0,
+                    0
+                ],
+                "size": [
+                    1,
+                    1,
+                    1
+                ],
+                "solid": true,
+                "target": "",
+                "uid": 2
+            }
+        ]
+    }
+}

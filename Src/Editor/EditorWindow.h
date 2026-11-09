@@ -7,6 +7,7 @@
 
 class QLabel;
 class QTableWidget;
+class QTableWidgetItem;
 class QTreeWidget;
 class QToolBar;
 class QAction;
@@ -43,6 +44,7 @@ namespace GameEditor
 		void OnFrameTick();
 		void OnViewportSelection(const QString& name);
 		void OnLayerCurrentChanged();
+		void OnPropItemChanged(QTableWidgetItem* item);   // 属性面板勾选（重力）
 
 	private:
 		void BuildMenus();
@@ -61,6 +63,12 @@ namespace GameEditor
 		void OnFileOpen();
 		void OnFileSave();
 		void OnFileSaveAs();
+		// ---- Level（关卡 = Levels 目录下的 .yu 场景文件，如 Level01.yu）----
+		void OnNewLevel();                              // 文件 ▸ 新建 Level...
+		void OnOpenLevel();                             // 文件 ▸ 打开 Level ▸ 浏览文件...
+		void FillLevelMenu();                            // 打开"打开 Level"子菜单前填充列表
+		bool OpenLevelFile(const QString& path);         // 载入某个 Level 文件
+		QString LevelsDir() const;                       // Levels 目录（工程根/Levels）
 		void OnRunScene();              // Player ▸ Run Scene（带网格/调试信息）
 		void OnRunProject();            // Player ▸ Run Project（只留 FPS）
 		void OnRunRestart();            // Player ▸ Restart（关掉重开）
@@ -148,6 +156,9 @@ namespace GameEditor
 
 		// 当前文档（.yu）；空 = 未命名
 		QString m_docPath;
+
+		// 文件 ▸ 打开 Level 的子菜单（每次弹出前按 Levels 目录刷新）
+		QMenu*  m_menuLevels = nullptr;
 
 		// Create / 属性 / 图层 / 动画面板
 		QTableWidget*  m_propTable = nullptr;

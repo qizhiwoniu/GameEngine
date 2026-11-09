@@ -39,7 +39,16 @@ namespace GameEditor
 				o.pos = QVector3D(v[0], v[2], v[1]);
 				o.rot = QVector3D(0.f, 0.f, v[3] * 0.0174532925f);
 				const float sc = std::max(0.05f, std::fabs(v[4]));
-				if (kind == SceneGraph2D::nkPlane)
+				if (kind == SceneGraph2D::nkTrigger)
+				{
+					o.kind = 2;                        // 跳转精灵：运行时不可见的触发体
+					const float s = std::max(0.2f, std::fabs(v[4]));
+					o.size = QVector3D(s, s, s);
+					o.solid = false;
+					o.gravity = false;
+					o.color = QColor(80, 210, 200);
+				}
+				else if (kind == SceneGraph2D::nkPlane)
 				{
 					o.kind = 1;
 					o.size = QVector3D(5.f * sc, 0.02f, 5.f * sc);
@@ -115,7 +124,11 @@ namespace GameEditor
 				}
 				float v[5];
 				ToVals(o, v);
-				const int kind = (o.kind == 1) ? SceneGraph2D::nkPlane : SceneGraph2D::nkBox;
+				const int kind = (o.kind == 1) ? SceneGraph2D::nkPlane
+					: (o.kind == 2) ? SceneGraph2D::nkTrigger
+					: SceneGraph2D::nkBox;
+				if (kind == SceneGraph2D::nkTrigger)
+					v[3] = v[4];                       // 尺寸放第 4 个引脚
 				v2d->AddLinkedNode(kind, QString::fromStdString(o.name), o.uid, v);
 				g_lastName[o.uid] = QString::fromStdString(o.name);
 				paired.insert(o.uid);
@@ -156,7 +169,19 @@ namespace GameEditor
 				}
 				float v[5];
 				ToVals(o, v);
+				if (n.kind == SceneGraph2D::nkTrigger)
+					v[3] = v[4];                       // 尺寸在第 4 个引脚
 				v2d->SetNodeVals(n.id, v);
+
+				// 跳转精灵的目标关卡：3D 属性面板为准；对象为空而节点有时反向回写
+				if (o.kind == 2)
+				{
+					const QString objTarget = QString::fromStdString(o.target);
+					if (!n.target.isEmpty() && objTarget.isEmpty())
+						v3d->SetObjectTarget(n.obj, n.target.toStdString());
+					else if (n.target != objTarget)
+						v2d->SetNodeTarget(n.id, objTarget);
+				}
 			}
 			g_known = newKnown;
 

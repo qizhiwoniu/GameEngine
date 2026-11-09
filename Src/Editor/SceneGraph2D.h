@@ -5,6 +5,7 @@
 #include <QStringList>
 #include <QPainterPath>
 #include <QSet>
+#include <functional>
 #include <vector>
 #include <utility>
 
@@ -28,7 +29,7 @@ namespace GameEditor
 		enum NodeKind
 		{
 			nkBox, nkPlane, nkTime, nkKey, nkAccum, nkSub, nkValue,
-			nkGravity, nkAdd, nkOutput, nkKeys, nkMouse, nkCamera, NK_COUNT
+			nkGravity, nkAdd, nkOutput, nkKeys, nkMouse, nkCamera, nkTrigger, NK_COUNT
 		};
 		enum { ptNumber = 0, ptObject = 1 };
 
@@ -43,8 +44,8 @@ namespace GameEditor
 			PinDef  out[4];
 		};
 
-		// 给 SceneLink 用的节点快照（只含方块 / 平面）
-		struct LinkInfo { int id = 0; int kind = 0; int obj = 0; QString name; float v[5] = { 0, 0, 0, 0, 1 }; };
+		// 给 SceneLink 用的节点快照（方块 / 平面 / 跳转精灵）
+		struct LinkInfo { int id = 0; int kind = 0; int obj = 0; QString name; QString target; float v[5] = { 0, 0, 0, 0, 1 }; };
 
 		explicit SceneGraph2D(QWidget* parent = nullptr);
 
@@ -56,9 +57,13 @@ namespace GameEditor
 		int  AddLinkedNode(int kind, const QString& name, int objUid, const float v[5]);
 		void SetNodeObj(int id, int objUid);
 		void SetNodeName(int id, const QString& name);
+		void SetNodeTarget(int id, const QString& target);      // 跳转精灵：目标关卡名（节点底部显示）
 		void SetNodeVals(int id, const float v[5]);
 		void SelectNodesByObj(const std::vector<int>& uids);
 		void RemoveNodeById(int id);
+
+		// 镜头块「看向谁」用：EditorWindow 注入，返回 3D 场景中方块对象的 (uid, 名称)
+		std::function<std::vector<std::pair<int, QString>>()> ObjLister;
 
 		// ---- 文档存取（.yu，由 Document 调用）----
 		void SaveState(QJsonObject& out) const;             // 节点 / 连线 / 组 -> JSON
@@ -92,7 +97,9 @@ namespace GameEditor
 			QPointF  pos;               // 视图坐标（左上角）
 			bool     sel = false;
 			int      group = 0;         // 0 = 不在组里
-			int      obj = 0;           // 配对的 3D 对象 uid
+			int      obj = 0;           // 配对的 3D 对象 uid（镜头块 = 要看向的对象）
+			QString  lookName;          // 镜头块绑定的对象名（节点底部显示用）
+			QString  target;            // 跳转精灵的目标关卡（空 = 自动下一关；节点底部显示用）
 			bool     collapsed = false;
 			bool     hasVal = false;
 			float    val[5] = { 0, 0, 0, 0, 1 };

@@ -3,6 +3,8 @@
 #include "SceneGraph2D.h"
 #include "SceneLink.h"
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -65,6 +67,40 @@ namespace GameEditor
 			v3d->LoadState(root["viewport"].toObject());
 			g2d->LoadState(root["graph2d"].toObject());
 			SceneLink::Reset();     // 载入的节点已带 obj 配对，不需要历史
+			return true;
+		}
+
+		QString LevelsDir()
+		{
+			QDir d(QCoreApplication::applicationDirPath());
+			for (int i = 0; i < 6; ++i)
+			{
+				if (QFile::exists(d.filePath(QStringLiteral("CMakeLists.txt"))))
+					return d.filePath(QStringLiteral("Levels"));
+				if (!d.cdUp())
+					break;
+			}
+			return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("Levels"));
+		}
+
+		bool LoadRuntime(const QString& path, QJsonObject& viewport, QJsonObject& graph, QString* err)
+		{
+			QFile f(path);
+			if (!f.open(QIODevice::ReadOnly))
+			{
+				if (err) *err = QStringLiteral("无法打开关卡：%1").arg(path);
+				return false;
+			}
+			QJsonParseError pe{};
+			const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &pe);
+			if (pe.error != QJsonParseError::NoError || !doc.isObject())
+			{
+				if (err) *err = QStringLiteral("关卡文件不是有效场景：%1").arg(pe.errorString());
+				return false;
+			}
+			const QJsonObject root = doc.object();
+			viewport = root["viewport"].toObject();
+			graph = root["graph2d"].toObject();
 			return true;
 		}
 	}
